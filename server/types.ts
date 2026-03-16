@@ -5,6 +5,11 @@ export type MainState = {
   updated_at: string;
   ttl_seconds?: number;
   officeName?: string;
+  capabilities?: {
+    stateControl?: boolean;
+    assetDecoration?: boolean;
+    agentSkillsApi?: boolean;
+  };
 };
 
 export type Agent = {

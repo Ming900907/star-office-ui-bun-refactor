@@ -20,17 +20,20 @@ function usage() {
   console.log("  bun run scripts/set-state.ts idle \"待命中\"");
   console.log("");
   console.log("Modes:");
-  console.log("  STAR_OFFICE_SET_STATE_MODE=http  # call POST /set_state (default)");
+  console.log("  STAR_OFFICE_SET_STATE_MODE=http  # call POST /agent-skills/execute (default)");
   console.log("  STAR_OFFICE_SET_STATE_MODE=file  # write state.json directly");
 }
 
 async function setByHttp(state: string, detail: string) {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiToken) headers.Authorization = `Bearer ${apiToken}`;
-  const res = await fetch(`${baseUrl}/set_state`, {
+  const res = await fetch(`${baseUrl}/agent-skills/execute`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ state, detail })
+    body: JSON.stringify({
+      skill: "openclaw.set-main-state",
+      input: { state, detail }
+    })
   });
 
   if (!res.ok) {

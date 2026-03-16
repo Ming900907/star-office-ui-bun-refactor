@@ -1,4 +1,4 @@
-import { PATHS, SECURITY, SERVER, VALID_AGENT_STATES } from "./config";
+import { FEATURES, PATHS, SECURITY, SERVER, VALID_AGENT_STATES } from "./config";
 import { applyAutoIdle, DEFAULT_AGENTS, normalizeAgentState, readOfficeNameFromIdentity, stateToArea } from "./utils";
 import {
   loadAgentsState,
@@ -202,19 +202,69 @@ function isAssetAuthed(req: Request) {
   return getCookie(req, "asset_editor_authed") === "1";
 }
 
-function requireApiToken(req: Request) {
-  if (!SECURITY.apiToken) return null;
+function hasValidApiToken(req: Request) {
+  if (!SECURITY.apiToken) return false;
   const auth = req.headers.get("authorization") || "";
   const xToken = req.headers.get("x-office-token") || "";
   const bearer = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   const got = bearer || xToken.trim();
-  if (got === SECURITY.apiToken) return null;
+  return got === SECURITY.apiToken;
+}
+
+function requireApiToken(req: Request) {
+  if (!SECURITY.apiToken) return null;
+  if (hasValidApiToken(req)) return null;
   return jsonResponse({ ok: false, code: "FORBIDDEN", msg: "invalid api token" }, 403);
 }
 
 function requireAssetAuth(req: Request) {
   if (isAssetAuthed(req)) return null;
   return jsonResponse({ ok: false, code: "UNAUTHORIZED", msg: "Asset editor auth required" }, 401);
+}
+
+function featureDisabledResponse(feature: string) {
+  return jsonResponse({
+    ok: false,
+    code: "FEATURE_DISABLED",
+    feature,
+    msg: "该功能已下线，已迁移到 OpenClaw agent skills 接口"
+  }, 410);
+}
+
+async function authenticateSkillCaller(req: Request, data: any): Promise<{ ok: true; agent: Agent | null } | { ok: false; response: Response }> {
+  if (!SECURITY.apiToken) return { ok: true, agent: null };
+  if (hasValidApiToken(req)) return { ok: true, agent: null };
+  const agentId = String(data?.agentId || "").trim();
+  const joinKey = String(data?.joinKey || "").trim();
+  if (!agentId || !joinKey) {
+    return { ok: false, response: jsonResponse({ ok: false, msg: "缺少 agentId/joinKey" }, 400) };
+  }
+
+  const keys = await loadJoinKeys();
+  const keyItem = keys.keys.find((k) => k.key === joinKey);
+  if (!keyItem) {
+    return { ok: false, response: jsonResponse({ ok: false, msg: "joinKey 无效" }, 403) };
+  }
+  if (keyItem.expiresAt) {
+    const exp = new Date(keyItem.expiresAt);
+    if (!Number.isNaN(exp.getTime()) && new Date() > exp) {
+      return { ok: false, response: jsonResponse({ ok: false, msg: "joinKey 已过期" }, 403) };
+    }
+  }
+
+  const agents = await loadAgentsState(DEFAULT_AGENTS);
+  const target = agents.find((a) => a.agentId === agentId && !a.isMain);
+  if (!target) {
+    return { ok: false, response: jsonResponse({ ok: false, msg: "agent 未注册，请先 join" }, 404) };
+  }
+  if (target.joinKey !== joinKey) {
+    return { ok: false, response: jsonResponse({ ok: false, msg: "joinKey 不匹配" }, 403) };
+  }
+  const authStatus = target.authStatus || "pending";
+  if (authStatus !== "approved" && authStatus !== "offline") {
+    return { ok: false, response: jsonResponse({ ok: false, msg: "agent 未获授权" }, 403) };
+  }
+  return { ok: true, agent: target };
 }
 
 async function ensureStateFile() {
@@ -247,6 +297,221 @@ async function ensureJoinKeysFile() {
       await fs.writeFile(PATHS.joinKeysFile, JSON.stringify({ keys: [] }, null, 2), "utf-8");
     }
   }
+}
+
+type AgentSkill = {
+  id: string;
+  name: string;
+  description: string;
+  inputSchema: Record<string, string>;
+  tokenCost: {
+    estimatedInputTokens: number;
+    estimatedOutputTokens: number;
+    note?: string;
+  };
+};
+
+function getAgentSkillsCatalog(): AgentSkill[] {
+  return [
+    {
+      id: "openclaw.set-main-state",
+      name: "Set Main State",
+      description: "更新主角色状态（替代 /set_state）",
+      inputSchema: { state: "string", detail: "string(optional)" },
+      tokenCost: {
+        estimatedInputTokens: 35,
+        estimatedOutputTokens: 20,
+        note: "轻量文本参数，适合高频调用"
+      }
+    },
+    {
+      id: "openclaw.restore-reference-background",
+      name: "Restore Reference Background",
+      description: "恢复 office_bg_small.webp 为参考背景",
+      inputSchema: {},
+      tokenCost: {
+        estimatedInputTokens: 15,
+        estimatedOutputTokens: 18,
+        note: "无额外业务参数，固定操作"
+      }
+    },
+    {
+      id: "openclaw.apply-home-favorite",
+      name: "Apply Home Favorite",
+      description: "按收藏 ID 应用背景（替代 /assets/home-favorites/apply）",
+      inputSchema: { id: "string" },
+      tokenCost: {
+        estimatedInputTokens: 22,
+        estimatedOutputTokens: 22,
+        note: "包含收藏 ID 校验与应用结果返回"
+      }
+    }
+  ];
+}
+
+function getOpenclawUsageOverview() {
+  const skills = getAgentSkillsCatalog();
+  const totalInputTokens = skills.reduce((sum, s) => sum + Number(s.tokenCost?.estimatedInputTokens || 0), 0);
+  const totalOutputTokens = skills.reduce((sum, s) => sum + Number(s.tokenCost?.estimatedOutputTokens || 0), 0);
+  const totalTokens = totalInputTokens + totalOutputTokens;
+  const inputCostPer1k = Number(process.env.OPENCLAW_INPUT_COST_PER_1K || 0.002);
+  const outputCostPer1k = Number(process.env.OPENCLAW_OUTPUT_COST_PER_1K || 0.008);
+  const estimatedCost = (totalInputTokens / 1000) * inputCostPer1k + (totalOutputTokens / 1000) * outputCostPer1k;
+
+  return {
+    ok: true,
+    mode: "estimated",
+    currency: "USD",
+    summary: {
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      totalTokens,
+      estimatedCostUsd: Number(estimatedCost.toFixed(6))
+    },
+    byModel: [
+      {
+        model: process.env.OPENCLAW_USAGE_MODEL || "openclaw-default",
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        totalTokens,
+        estimatedCostUsd: Number(estimatedCost.toFixed(6))
+      }
+    ],
+    byChannel: [
+      {
+        channel: process.env.OPENCLAW_USAGE_CHANNEL || "openclaw",
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        totalTokens,
+        estimatedCostUsd: Number(estimatedCost.toFixed(6))
+      }
+    ],
+    costPolicy: {
+      inputCostPer1k,
+      outputCostPer1k
+    },
+    note: "当前为估算视图：基于技能 token 配置计算，不是实时计费账单"
+  };
+}
+
+async function fetchJsonFromSource(url: string, token?: string, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(url, { headers, signal: controller.signal });
+    const text = await res.text();
+    let data: any = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
+    return { ok: res.ok, status: res.status, data, text };
+  } catch (error) {
+    return { ok: false, status: 0, data: null, text: String((error as Error)?.message || error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function normalizeSkillsFromPayload(payload: any): AgentSkill[] {
+  const fallback = getAgentSkillsCatalog();
+  const fallbackMap = new Map(fallback.map((s) => [s.id, s]));
+  const list = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.skills)
+      ? payload.skills
+      : Array.isArray(payload?.items)
+        ? payload.items
+        : [];
+
+  const normalized = list
+    .map((it: any) => {
+      const id = String(it?.id || "").trim();
+      if (!id) return null;
+      const ref = fallbackMap.get(id);
+      const tokenCost = it?.tokenCost || it?.token_cost || ref?.tokenCost || {
+        estimatedInputTokens: 0,
+        estimatedOutputTokens: 0
+      };
+      return {
+        id,
+        name: String(it?.name || ref?.name || id),
+        description: String(it?.description || ref?.description || ""),
+        inputSchema: (it?.inputSchema && typeof it.inputSchema === "object") ? it.inputSchema : (ref?.inputSchema || {}),
+        tokenCost: {
+          estimatedInputTokens: Number(tokenCost?.estimatedInputTokens || tokenCost?.estimated_input_tokens || 0),
+          estimatedOutputTokens: Number(tokenCost?.estimatedOutputTokens || tokenCost?.estimated_output_tokens || 0),
+          note: typeof tokenCost?.note === "string" ? tokenCost.note : (ref?.tokenCost?.note || "")
+        }
+      } as AgentSkill;
+    })
+    .filter(Boolean) as AgentSkill[];
+
+  return normalized.length ? normalized : fallback;
+}
+
+async function executeAgentSkill(skillId: string, input: any) {
+  if (skillId === "openclaw.set-main-state") {
+    const state = await loadState();
+    if (input?.state && typeof input.state === "string") {
+      const normalized = input.state.trim();
+      if (VALID_AGENT_STATES.has(normalized)) {
+        state.state = normalized;
+      }
+    }
+    if (typeof input?.detail === "string") {
+      state.detail = input.detail;
+    }
+    state.updated_at = new Date().toISOString();
+    await saveState(state);
+    return { ok: true, state: state.state, detail: state.detail };
+  }
+
+  if (skillId === "openclaw.restore-reference-background") {
+    const target = path.resolve(PATHS.frontendRoot, "office_bg_small.webp");
+    if (!(await fileExists(target))) {
+      return { ok: false, status: 404, msg: "office_bg_small.webp 不存在" };
+    }
+    const refWebp = path.resolve(PATHS.assetsDir, "room-reference.webp");
+    const refPng = path.resolve(PATHS.assetsDir, "room-reference.png");
+    let ref = refWebp;
+    if (!(await fileExists(refWebp))) {
+      ref = refPng;
+    }
+    if (!(await fileExists(ref))) {
+      return { ok: false, status: 404, msg: "参考图不存在" };
+    }
+    await copyFileSafe(target, `${target}.bak`);
+    await copyFileSafe(ref, target);
+    const st = await fs.stat(target);
+    return { ok: true, path: "office_bg_small.webp", size: st.size, msg: "已恢复参考背景" };
+  }
+
+  if (skillId === "openclaw.apply-home-favorite") {
+    const itemId = String(input?.id || "").trim();
+    if (!itemId) return { ok: false, status: 400, msg: "缺少 id" };
+    const idx = await loadHomeFavoritesIndex();
+    const items = idx.items || [];
+    const hit = items.find((it) => String(it.id || "") === itemId);
+    if (!hit) return { ok: false, status: 404, msg: "收藏项不存在" };
+    const src = path.resolve(PATHS.projectRoot, String(hit.path || ""));
+    if (!(await fileExists(src))) {
+      return { ok: false, status: 404, msg: "收藏文件不存在" };
+    }
+    const target = path.resolve(PATHS.frontendRoot, "office_bg_small.webp");
+    if (!(await fileExists(target))) {
+      return { ok: false, status: 404, msg: "office_bg_small.webp 不存在" };
+    }
+    await copyFileSafe(target, `${target}.bak`);
+    await copyFileSafe(src, target);
+    const st = await fs.stat(target);
+    return { ok: true, path: "office_bg_small.webp", size: st.size, from: hit.path, msg: "已应用收藏地图" };
+  }
+
+  return { ok: false, status: 404, msg: "未知 skill" };
 }
 
 export async function handleRequest(req: Request) {
@@ -302,6 +567,71 @@ export async function handleRequest(req: Request) {
     });
   }
 
+  if (req.method === "GET" && pathName === "/openclaw/skills") {
+    if (SECURITY.isProduction) {
+      const sourceUrl = String(process.env.OPENCLAW_SKILLS_SOURCE_URL || "").trim();
+      const sourceToken = String(process.env.OPENCLAW_SOURCE_TOKEN || "").trim();
+      if (!sourceUrl) {
+        return jsonResponse({ ok: false, msg: "OPENCLAW_SKILLS_SOURCE_URL is required in production" }, 503);
+      }
+      const upstream = await fetchJsonFromSource(sourceUrl, sourceToken);
+      if (!upstream.ok) {
+        return jsonResponse({
+          ok: false,
+          msg: "failed to fetch production skills source",
+          upstreamStatus: upstream.status
+        }, 502);
+      }
+      const skills = normalizeSkillsFromPayload(upstream.data);
+      return jsonResponse({
+        ok: true,
+        source: "production-upstream",
+        skills,
+        count: skills.length,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const skills = getAgentSkillsCatalog();
+    return jsonResponse({
+      ok: true,
+      source: "local-catalog",
+      skills,
+      count: skills.length,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  if (req.method === "GET" && pathName === "/openclaw/usage") {
+    if (SECURITY.isProduction) {
+      const sourceUrl = String(process.env.OPENCLAW_USAGE_SOURCE_URL || "").trim();
+      const sourceToken = String(process.env.OPENCLAW_SOURCE_TOKEN || "").trim();
+      if (!sourceUrl) {
+        return jsonResponse({ ok: false, msg: "OPENCLAW_USAGE_SOURCE_URL is required in production" }, 503);
+      }
+      const upstream = await fetchJsonFromSource(sourceUrl, sourceToken);
+      if (!upstream.ok || !upstream.data || typeof upstream.data !== "object") {
+        return jsonResponse({
+          ok: false,
+          msg: "failed to fetch production usage source",
+          upstreamStatus: upstream.status
+        }, 502);
+      }
+      return jsonResponse({
+        ...upstream.data,
+        ok: true,
+        source: "production-upstream",
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    return jsonResponse({
+      ...getOpenclawUsageOverview(),
+      source: "local-estimated",
+      timestamp: new Date().toISOString()
+    });
+  }
+
   if (req.method === "GET" && pathName === "/status") {
     let state = await loadState();
     const applied = applyAutoIdle(state);
@@ -311,10 +641,16 @@ export async function handleRequest(req: Request) {
     state = applied;
     const officeName = await readOfficeNameFromIdentity();
     if (officeName) state.officeName = officeName;
+    state.capabilities = {
+      stateControl: FEATURES.enableStateControl,
+      assetDecoration: FEATURES.enableAssetDecoration,
+      agentSkillsApi: FEATURES.enableAgentSkillsApi
+    };
     return jsonResponse(state);
   }
 
   if (req.method === "POST" && pathName === "/set_state") {
+    if (!FEATURES.enableStateControl) return featureDisabledResponse("state-control");
     const guard = requireApiToken(req);
     if (guard) return guard;
     const data = await readBodyJson(req);
@@ -637,9 +973,37 @@ export async function handleRequest(req: Request) {
     return jsonResponse({ ok: true, agentId, area: target.area });
   }
 
+  if (req.method === "POST" && pathName === "/agent-skills/list") {
+    if (!FEATURES.enableAgentSkillsApi) return featureDisabledResponse("agent-skills-api");
+    const data = await readBodyJson(req);
+    const auth = await authenticateSkillCaller(req, data);
+    if (!auth.ok) return auth.response;
+    const skills = getAgentSkillsCatalog();
+    return jsonResponse({ ok: true, skills, count: skills.length });
+  }
+
+  if (req.method === "POST" && pathName === "/agent-skills/execute") {
+    if (!FEATURES.enableAgentSkillsApi) return featureDisabledResponse("agent-skills-api");
+    const data = await readBodyJson(req);
+    if (!data || typeof data !== "object") return jsonResponse({ ok: false, msg: "invalid json" }, 400);
+    const auth = await authenticateSkillCaller(req, data);
+    if (!auth.ok) return auth.response;
+    const skill = String(data.skill || "").trim();
+    if (!skill) return jsonResponse({ ok: false, msg: "缺少 skill" }, 400);
+    const result = await executeAgentSkill(skill, data.input || {});
+    if (!result.ok) {
+      return jsonResponse({ ok: false, msg: result.msg || "skill 执行失败", skill }, result.status || 400);
+    }
+    return jsonResponse({ ok: true, skill, result });
+  }
+
   if (req.method === "GET" && pathName === "/yesterday-memo") {
     const result = await getYesterdayMemo();
     return jsonResponse(result);
+  }
+
+  if (pathName.startsWith("/assets/") && !FEATURES.enableAssetDecoration) {
+    return featureDisabledResponse("asset-decoration");
   }
 
   if (pathName === "/assets/auth" && req.method === "POST") {
@@ -981,10 +1345,9 @@ export async function handleRequest(req: Request) {
   }
 
   // Static file serving for frontend assets
-  if (req.method === "GET" && (pathName === "/" || pathName === "/electron-standalone" || pathName === "/join" || pathName === "/invite")) {
+  if (req.method === "GET" && (pathName === "/" || pathName === "/join" || pathName === "/invite")) {
     const fileMap: Record<string, string> = {
       "/": path.join(PATHS.frontendRoot, "index.html"),
-      "/electron-standalone": path.join(PATHS.frontendRoot, "electron-standalone.html"),
       "/join": path.join(PATHS.frontendRoot, "join.html"),
       "/invite": path.join(PATHS.frontendRoot, "invite.html")
     };

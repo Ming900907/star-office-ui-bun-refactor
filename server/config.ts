@@ -40,6 +40,12 @@ export const FLAGS = {
   autoRotateMinIntervalSeconds: Number(process.env.AUTO_ROTATE_MIN_INTERVAL_SECONDS || 60)
 };
 
+export const FEATURES = {
+  enableStateControl: ["1", "true", "yes", "on"].includes((process.env.ENABLE_STATE_CONTROL || "0").toLowerCase()),
+  enableAssetDecoration: ["1", "true", "yes", "on"].includes((process.env.ENABLE_ASSET_DECORATION || "0").toLowerCase()),
+  enableAgentSkillsApi: ["1", "true", "yes", "on"].includes((process.env.ENABLE_AGENT_SKILLS_API || "1").toLowerCase())
+};
+
 export const VALID_AGENT_STATES = new Set(["idle", "writing", "researching", "executing", "syncing", "error"]);
 export const WORKING_STATES = new Set(["writing", "researching", "executing"]);
 export const STATE_TO_AREA_MAP: Record<string, string> = {

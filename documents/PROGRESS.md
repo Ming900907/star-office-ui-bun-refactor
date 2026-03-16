@@ -1,27 +1,34 @@
 # 项目进度
 
 ## 当前阶段
-回归验证与收尾阶段（聚焦 Bun 服务交付）
+生产化落地阶段（聚焦 Bun Web + OpenClaw source 集成）
 
 ## 里程碑进度
 - 现状梳理与接口清单：已完成
 - Bun 后端基础框架与文件存储层：已完成
 - API 兼容实现（无生图）：已完成
 - 前端入口处理：已完成
-- Electron 启动方式调整：暂缓（本阶段不纳入）
-- 回归验证与打包：进行中
+- OpenClaw 技能/用量面板改造：已完成
+- 生产环境 source 拉取链路：已完成
+- 自动化部署引导（bootstrap）：已完成
+- 收尾清理（含 Electron 代码移除）：已完成
+- 项目文档生产化同步：已完成（2026-03-16）
 
 ## 最近更新（2026-03-16）
+- 功能切换：默认下线 `/set_state` 与 `/assets/*`，改为 OpenClaw agent skills 接口（`/agent-skills/list`、`/agent-skills/execute`）
+- 前端入口调整：将原“装修房间”区域切换为“OpenClaw 技能展示”抽屉（`/openclaw/skills`）
+- 新增“用量追踪”入口：展示模型/渠道/token/成本（`/openclaw/usage`）
+- 交互修正：`用量追踪` 按钮样式与技能按钮统一为像素风全宽按钮
+- 生产链路改造：`/openclaw/skills` 与 `/openclaw/usage` 在生产环境改为上游 source 拉取
+- 新增一键部署引导：`bun run bootstrap:prod`（自动配置 `.env`、初始化状态文件、执行最小验收）
 - 完成端到端与手动回归（/health、/status、/agents、/join-agent、/agent-approve/reject/leave/push、/yesterday-memo、/assets/*、页面路由）
 - 行为对齐：/set_state 非法 state 忽略且 200；/yesterday-memo 无文件 200+success=false；/leave-agent 在 reject 后 404 与上游一致
-- 补齐：/assets/template.zip 提示与模板包；/assets/list 图片宽高；join key 对齐 ocj_starteam01~08
-- Electron 路线暂时放弃，当前阶段以 Bun Web 服务为唯一交付目标
 - 识别到仓库含 sample/测试用途文件，且 Bun 在 `join-keys.json` 缺失时会自动回退 `join-keys.sample.json`
-- 新增 Bun 版状态脚本 `scripts/set-state.ts` 与 `state:writing/syncing/error/idle` 快捷命令
+- 状态脚本升级：`scripts/set-state.ts` 默认走 `/agent-skills/execute`
 - 新增根级 `SKILL.md`（Bun 重构版），并补充 `.env.example`
 - 访客推送脚本从 Python 迁移为 `frontend/office-agent-push.mjs`，文档已切换
 - VPS OpenClaw 集成指引已整理：`documents/OPENCLAW_INTEGRATION.md`
-- 交互增强：新增场景悬浮信息层（猫/机柜），并统一支持 `index.html` 与 `electron-standalone.html`
+- 交互增强：新增场景悬浮信息层（猫/机柜）
 - 设备监控：新增 `GET /system-info`，前端在机柜区域展示 CPU 负载、内存占用、系统与运行时信息
 - 版本策略：`openclaw` 版本号改为动态探测（`OPENCLAW_VERSION` -> `openclaw --version` -> `codex --version` -> `package.json` 回退）
 - 交互修正：仅保留机柜区域展示机器信息，移除左下桌面显示器热区；猫信息绑定为沙发猫
@@ -29,9 +36,10 @@
 
 ## 是否可部署
 - 后端与前端核心功能已可部署（不含生图）
-- Electron 壳不作为当前部署前置条件
+- 生产环境已支持 OpenClaw source 模式（skills/usage）
+- 推荐通过 `bun run bootstrap:prod` 完成部署初始化
 
 ## 待办事项（下一步）
 - 清理与标注 sample/测试用途文件，避免生产环境误用
-- 明确生产初始化流程（强制准备真实 `state.json`/`join-keys.json`）
+- 生产 source 接口异常场景（超时/鉴权失败）增强监控与告警
 - 回归验证与打包准备（Bun 服务范围）

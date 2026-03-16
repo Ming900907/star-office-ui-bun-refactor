@@ -225,7 +225,8 @@
             padding-right: 10px;
             box-sizing: border-box;
         }
-        #btn-open-drawer {
+        #btn-open-drawer,
+        #btn-open-usage {
             grid-column: 1 / -1;
             background: #78a340;
             border-color: #8fbe4a;
@@ -682,7 +683,8 @@
             filter: brightness(0.97);
         }
         /* 装修房间按钮使用像素精灵皮肤 */
-        #control-bar #btn-open-drawer {
+        #control-bar #btn-open-drawer,
+        #control-bar #btn-open-usage {
             background-image: url('/static/btn-open-drawer-sprite.png?v={{VERSION_TIMESTAMP}}') !important;
             background-color: transparent !important;
             background-repeat: no-repeat !important;
@@ -701,11 +703,13 @@
             line-height: 1 !important;
             transition: padding-top .08s ease, padding-bottom .08s ease, filter .12s ease;
         }
-        #control-bar #btn-open-drawer:hover {
+        #control-bar #btn-open-drawer:hover,
+        #control-bar #btn-open-usage:hover {
             background-color: transparent !important;
             filter: brightness(1.04);
         }
-        #control-bar #btn-open-drawer:active {
+        #control-bar #btn-open-drawer:active,
+        #control-bar #btn-open-usage:active {
             background-position: 50% 0 !important;
             padding-top: 5px !important;
             padding-bottom: 5px !important;
@@ -1158,15 +1162,16 @@
             <div class="memo-decoration">─ ─ ─ ─ ─</div>
         </div>
         
-        <!-- 状态控制栏 -->
+        <!-- OpenClaw 技能栏 -->
         <div id="control-bar">
-            <div id="control-bar-title">Star 状态</div>
+            <div id="control-bar-title">OpenClaw</div>
             <div id="control-buttons">
                 <button id="btn-state-idle" onclick="setState('idle','待命')">待命</button>
                 <button id="btn-state-writing" onclick="setState('writing','工作中')">工作</button>
                 <button id="btn-state-syncing" onclick="setState('syncing','同步中')">同步</button>
                 <button id="btn-state-error" onclick="setState('error','报警中')">报警</button>
-                <button id="btn-open-drawer" onclick="toggleAssetDrawer()">装修房间</button>
+                <button id="btn-open-drawer" onclick="openOpenclawSkillsDrawer()">OpenClaw 技能</button>
+                <button id="btn-open-usage" onclick="openUsageTrackingDrawer()">用量追踪</button>
             </div>
         </div>
 
@@ -1191,7 +1196,7 @@
     <div id="asset-drawer-backdrop" onclick="toggleAssetDrawer(false)"></div>
     <aside id="asset-drawer">
         <div id="asset-drawer-header">
-            <span>装修房间 · 资产侧边栏</span>
+            <span>OpenClaw 技能列表</span>
             <button id="btn-close-drawer" onclick="toggleAssetDrawer(false)">关闭</button>
         </div>
         <div id="asset-drawer-body">
@@ -1292,11 +1297,12 @@
         // 简易中英文切换
         let uiLang = localStorage.getItem('uiLang') || 'en';
         const GENERATION_DISABLED = true;
+        let runtimeCapabilities = { stateControl: false, assetDecoration: false, agentSkillsApi: true };
         const I18N = {
             zh: {
-                controlTitle: 'Star 状态',
-                btnIdle: '待命', btnWork: '工作', btnSync: '同步', btnError: '报警', btnDecor: '装修房间',
-                drawerTitle: '装修房间 · 资产侧边栏', drawerClose: '关闭',
+                controlTitle: 'OpenClaw',
+                btnIdle: '待命', btnWork: '工作', btnSync: '同步', btnError: '报警', btnDecor: 'OpenClaw 技能', btnUsage: '用量追踪',
+                drawerTitle: 'OpenClaw 技能列表', usageTitle: 'OpenClaw 用量追踪', drawerClose: '关闭',
                 authTitle: '请输入装修验证码', authPlaceholder: '输入验证码', authVerify: '验证', authDefaultPassHint: '默认密码：1234（可随时让我帮你改，建议改成强密码）',
                 drawerVisibilityTip: '可见性：点击条目右侧眼睛按钮切换该资产显示',
                 hideDrawer: '👁 隐藏侧边栏', showDrawer: '👁 显示侧边栏',
@@ -1323,9 +1329,9 @@
                 loadingOffice: '正在加载 Star 的像素办公室...'
             },
             en: {
-                controlTitle: 'Star Status',
-                btnIdle: 'Idle', btnWork: 'Work', btnSync: 'Sync', btnError: 'Alert', btnDecor: 'Decorate Room',
-                drawerTitle: 'Decorate Room · Asset Sidebar', drawerClose: 'Close',
+                controlTitle: 'OpenClaw',
+                btnIdle: 'Idle', btnWork: 'Work', btnSync: 'Sync', btnError: 'Alert', btnDecor: 'OpenClaw Skills', btnUsage: 'Usage Tracking',
+                drawerTitle: 'OpenClaw Skill Catalog', usageTitle: 'OpenClaw Usage Tracking', drawerClose: 'Close',
                 authTitle: 'Enter Decor Passcode', authPlaceholder: 'Enter passcode', authVerify: 'Verify', authDefaultPassHint: 'Default passcode: 1234 (ask me anytime to change it; stronger passcode recommended)',
                 drawerVisibilityTip: 'Visibility: use the eye button on each row to hide/show that asset',
                 hideDrawer: '👁 Hide Drawer', showDrawer: '👁 Show Drawer',
@@ -1352,9 +1358,9 @@
                 loadingOffice: 'Loading Star’s pixel office...'
             },
             ja: {
-                controlTitle: 'Star ステータス',
-                btnIdle: '待機', btnWork: '作業', btnSync: '同期', btnError: '警報', btnDecor: '部屋を編集',
-                drawerTitle: '部屋編集・アセットサイドバー', drawerClose: '閉じる',
+                controlTitle: 'OpenClaw',
+                btnIdle: '待機', btnWork: '作業', btnSync: '同期', btnError: '警報', btnDecor: 'OpenClaw スキル', btnUsage: '使用量トラッキング',
+                drawerTitle: 'OpenClaw スキル一覧', usageTitle: 'OpenClaw 使用量トラッキング', drawerClose: '閉じる',
                 authTitle: '編集パスコードを入力', authPlaceholder: 'パスコード入力', authVerify: '認証', authDefaultPassHint: '初期パスコード：1234（いつでも変更を相談可。強固なパス推奨）',
                 drawerVisibilityTip: '表示切替：各行右側の目ボタンで資産を表示/非表示',
                 hideDrawer: '👁 サイドバーを隠す', showDrawer: '👁 サイドバーを表示',
@@ -1437,6 +1443,7 @@
             setText('btn-state-syncing', 'btnSync');
             setText('btn-state-error', 'btnError');
             setText('btn-open-drawer', 'btnDecor');
+            setText('btn-open-usage', 'btnUsage');
             const langButtons = [
                 { id: 'lang-btn-en', lang: 'en' },
                 { id: 'lang-btn-jp', lang: 'ja' },
@@ -1452,7 +1459,7 @@
             });
 
             const drawerTitle = document.querySelector('#asset-drawer-header span');
-            if (drawerTitle) drawerTitle.textContent = t('drawerTitle');
+            if (drawerTitle) drawerTitle.textContent = openclawDrawerMode === 'usage' ? t('usageTitle') : t('drawerTitle');
             const drawerClose = document.getElementById('btn-close-drawer');
             if (drawerClose) drawerClose.textContent = t('drawerClose');
 
@@ -1695,6 +1702,7 @@
         let FLOWERS_FRAME_ROWS = 4;
         let currentOfficeBgTextureKey = 'office_bg';
         let assetDrawerOpen = false;
+        let openclawDrawerMode = 'skills';
         let assetDrawerAuthed = false;
         let assetManualPanelOpen = false;
         let assetFilterMode = 'all';
@@ -1763,8 +1771,25 @@
         let lastSeenGuestIds = new Set(); // 用于检测新加入的访客，触发欢迎气泡
         let guestWelcomeInitialized = false;
 
+        function applyCapabilityUI(caps) {
+            runtimeCapabilities = {
+                stateControl: !!caps?.stateControl,
+                assetDecoration: !!caps?.assetDecoration,
+                agentSkillsApi: !!caps?.agentSkillsApi
+            };
+            const controlBar = document.getElementById('control-bar');
+            if (controlBar && !runtimeCapabilities.stateControl && !runtimeCapabilities.agentSkillsApi) {
+                controlBar.style.display = 'none';
+            }
+            ['btn-state-idle', 'btn-state-writing', 'btn-state-syncing', 'btn-state-error'].forEach((id) => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = runtimeCapabilities.stateControl ? '' : 'none';
+            });
+        }
+
         // 状态控制栏函数（用于测试）
         function setState(state, detail) {
+            if (!runtimeCapabilities.stateControl) return;
             fetch('/set_state', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -3436,7 +3461,114 @@ function toggleBrokerPanel() {
         // 记录 body scroll 位置，drawer 关闭时恢复
         let _drawerScrollY = 0;
 
+        function escapeHtml(s) {
+            return String(s || '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+        }
+
+        async function renderOpenclawSkillsDrawer() {
+            const body = document.getElementById('asset-drawer-body');
+            if (!body) return;
+            body.innerHTML = `<div class="asset-sub" style="padding:8px 6px;">Loading OpenClaw skills...</div>`;
+            try {
+                const res = await fetch('/openclaw/skills?t=' + Date.now(), { cache: 'no-store' });
+                const data = await res.json();
+                const skills = Array.isArray(data?.skills) ? data.skills : [];
+                if (!skills.length) {
+                    body.innerHTML = `<div class="asset-sub" style="padding:8px 6px;">No skills found.</div>`;
+                    return;
+                }
+                const tokenTotals = skills.map((it) => {
+                    const tc = it.tokenCost || {};
+                    const input = Number(tc.estimatedInputTokens || 0);
+                    const output = Number(tc.estimatedOutputTokens || 0);
+                    return Math.max(0, input + output);
+                });
+                const totalEstimatedTokens = tokenTotals.reduce((sum, v) => sum + v, 0) || 1;
+                body.innerHTML = `<div class="asset-sub" style="padding:8px 6px;color:#93c5fd;">Total estimated tokens: ${totalEstimatedTokens}</div>` + skills.map((it, idx) => {
+                    const schema = it.inputSchema && typeof it.inputSchema === 'object'
+                        ? Object.entries(it.inputSchema).map(([k, v]) => `${escapeHtml(k)}: ${escapeHtml(v)}`).join(', ')
+                        : '';
+                    const tokenCost = it.tokenCost || {};
+                    const tokenIn = Number(tokenCost.estimatedInputTokens || 0);
+                    const tokenOut = Number(tokenCost.estimatedOutputTokens || 0);
+                    const tokenSum = tokenTotals[idx];
+                    const percent = Math.round((tokenSum / totalEstimatedTokens) * 100);
+                    const tokenLine = `token(estimate): in ${tokenIn} / out ${tokenOut} / total ${tokenSum} (${percent}%)`;
+                    return `<div class="asset-item" style="display:block;cursor:default;">
+                        <div class="asset-meta" style="width:100%;">
+                            <div class="asset-path" style="font-weight:700;">${escapeHtml(it.name || it.id)}</div>
+                            <div class="asset-sub" style="margin-top:4px;">${escapeHtml(it.description || '')}</div>
+                            <div class="asset-sub" style="margin-top:4px;color:#94a3b8;">id: ${escapeHtml(it.id || '')}</div>
+                            <div class="asset-sub" style="margin-top:2px;color:#94a3b8;">input: ${schema || 'none'}</div>
+                            <div class="asset-sub" style="margin-top:2px;color:#94a3b8;">${escapeHtml(tokenLine)}</div>
+                            <div style="margin-top:4px;height:8px;border:1px solid #334155;border-radius:999px;background:#0f172a;overflow:hidden;">
+                                <div style="height:100%;width:${Math.max(2, percent)}%;background:linear-gradient(90deg,#22d3ee,#22c55e);"></div>
+                            </div>
+                            ${tokenCost.note ? `<div class="asset-sub" style="margin-top:2px;color:#94a3b8;">note: ${escapeHtml(tokenCost.note)}</div>` : ''}
+                        </div>
+                    </div>`;
+                }).join('');
+            } catch (e) {
+                body.innerHTML = `<div class="asset-sub" style="padding:8px 6px;">Load failed: ${escapeHtml(e?.message || e)}</div>`;
+            }
+        }
+
+        async function renderUsageTrackingDrawer() {
+            const body = document.getElementById('asset-drawer-body');
+            if (!body) return;
+            body.innerHTML = `<div class="asset-sub" style="padding:8px 6px;">Loading usage tracking...</div>`;
+            try {
+                const res = await fetch('/openclaw/usage?t=' + Date.now(), { cache: 'no-store' });
+                const data = await res.json();
+                if (!data || !data.ok) {
+                    body.innerHTML = `<div class="asset-sub" style="padding:8px 6px;">Usage data unavailable.</div>`;
+                    return;
+                }
+                const s = data.summary || {};
+                const models = Array.isArray(data.byModel) ? data.byModel : [];
+                const channels = Array.isArray(data.byChannel) ? data.byChannel : [];
+                body.innerHTML = [
+                    `<div class="asset-sub" style="padding:8px 6px;color:#93c5fd;">mode: ${escapeHtml(data.mode || 'estimated')} ｜ currency: ${escapeHtml(data.currency || 'USD')}</div>`,
+                    `<div class="asset-item" style="display:block;cursor:default;">
+                        <div class="asset-meta" style="width:100%;">
+                            <div class="asset-path" style="font-weight:700;">Summary</div>
+                            <div class="asset-sub" style="margin-top:4px;color:#94a3b8;">input: ${Number(s.inputTokens || 0)} ｜ output: ${Number(s.outputTokens || 0)} ｜ total: ${Number(s.totalTokens || 0)}</div>
+                            <div class="asset-sub" style="margin-top:2px;color:#94a3b8;">estimated cost: $${Number(s.estimatedCostUsd || 0).toFixed(6)}</div>
+                        </div>
+                    </div>`,
+                    models.map((it) => `<div class="asset-item" style="display:block;cursor:default;">
+                        <div class="asset-meta" style="width:100%;">
+                            <div class="asset-path" style="font-weight:700;">Model: ${escapeHtml(it.model || 'unknown')}</div>
+                            <div class="asset-sub" style="margin-top:4px;color:#94a3b8;">tokens: ${Number(it.totalTokens || 0)} (in ${Number(it.inputTokens || 0)} / out ${Number(it.outputTokens || 0)})</div>
+                            <div class="asset-sub" style="margin-top:2px;color:#94a3b8;">cost: $${Number(it.estimatedCostUsd || 0).toFixed(6)}</div>
+                        </div>
+                    </div>`).join(''),
+                    channels.map((it) => `<div class="asset-item" style="display:block;cursor:default;">
+                        <div class="asset-meta" style="width:100%;">
+                            <div class="asset-path" style="font-weight:700;">Channel: ${escapeHtml(it.channel || 'unknown')}</div>
+                            <div class="asset-sub" style="margin-top:4px;color:#94a3b8;">tokens: ${Number(it.totalTokens || 0)} (in ${Number(it.inputTokens || 0)} / out ${Number(it.outputTokens || 0)})</div>
+                            <div class="asset-sub" style="margin-top:2px;color:#94a3b8;">cost: $${Number(it.estimatedCostUsd || 0).toFixed(6)}</div>
+                        </div>
+                    </div>`).join(''),
+                    data.note ? `<div class="asset-sub" style="padding:8px 6px;color:#94a3b8;">note: ${escapeHtml(data.note)}</div>` : ''
+                ].join('');
+            } catch (e) {
+                body.innerHTML = `<div class="asset-sub" style="padding:8px 6px;">Load failed: ${escapeHtml(e?.message || e)}</div>`;
+            }
+        }
+
+        async function openOpenclawSkillsDrawer() {
+            openclawDrawerMode = 'skills';
+            await toggleAssetDrawer(true);
+        }
+
+        async function openUsageTrackingDrawer() {
+            openclawDrawerMode = 'usage';
+            await toggleAssetDrawer(true);
+        }
+
         async function toggleAssetDrawer(force) {
+            if (!runtimeCapabilities.agentSkillsApi) return;
             const drawer = document.getElementById('asset-drawer');
             const backdrop = document.getElementById('asset-drawer-backdrop');
             const next = (typeof force === 'boolean') ? force : !assetDrawerOpen;
@@ -3456,29 +3588,24 @@ function toggleBrokerPanel() {
 
             const openBtn = document.getElementById('btn-open-drawer');
             if (openBtn) {
-                openBtn.classList.toggle('is-active', next);
+                openBtn.classList.toggle('is-active', next && openclawDrawerMode === 'skills');
                 openBtn.textContent = t('btnDecor');
+            }
+            const usageBtn = document.getElementById('btn-open-usage');
+            if (usageBtn) {
+                usageBtn.classList.toggle('is-active', next && openclawDrawerMode === 'usage');
+                usageBtn.textContent = t('btnUsage');
             }
             const closeBtn = document.getElementById('btn-close-drawer');
             if (closeBtn) closeBtn.textContent = t('drawerClose');
             if (next) {
-                assetManualPanelOpen = false;
-                updateAssetAuthUI();
-                bindAssetDrawerBackgroundDeselect();
-                await ensureGeminiConfigLoaded();
-                if (assetDrawerAuthed) {
-                    await applySavedPositionOverrides();
-                    await refreshAssetDrawerList();
-                    await renderHomeFavorites(false);
-                    bindDrawerFileMeta();
+                const drawerTitle = document.querySelector('#asset-drawer-header span');
+                if (drawerTitle) drawerTitle.textContent = (openclawDrawerMode === 'usage') ? t('usageTitle') : t('drawerTitle');
+                if (openclawDrawerMode === 'usage') {
+                    await renderUsageTrackingDrawer();
                 } else {
-                    const msg = document.getElementById('asset-auth-msg');
-                    if (msg) msg.textContent = t('authDefaultPassHint');
+                    await renderOpenclawSkillsDrawer();
                 }
-            } else {
-                assetManualPanelOpen = false;
-                updateManualPanelUI();
-                clearAssetSelectionUI();
             }
         }
 
@@ -4860,6 +4987,7 @@ function toggleBrokerPanel() {
                 .then(response => response.json())
                 .then(data => {
                     try {
+                        applyCapabilityUI(data.capabilities || {});
                         if (data.officeName) {
                             window.officeNameFromServer = data.officeName;
                             if (window.officePlaqueText && window.officePlaqueText.setText) {
