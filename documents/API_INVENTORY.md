@@ -17,6 +17,7 @@
 | --- | --- | --- |
 | GET | `/health` | 健康检查 |
 | GET | `/status` | 主 Agent 状态（可含 officeName） |
+| GET | `/system-info` | 运行节点信息（openclaw 版本、CPU/内存指标、Node/Bun 版本） |
 | POST | `/set_state` | 设置主状态（非法 state 忽略） |
 | GET | `/agents` | Agent 列表 |
 | POST | `/join-agent` | 访客加入（自动批准；并发超限 429） |
@@ -59,3 +60,4 @@
 - `/assets/template.zip`：已提供 `assets-replace-template.zip`
 - `/assets/list`：宽高由纯 TS 解析补齐
 - 启动初始化：`join-keys.json` 缺失时会回退 `join-keys.sample.json`
+- `/system-info`：新增设备指标输出（Linux/macOS 通用；Windows 下 `loadavg` 不具代表性）

@@ -21,6 +21,11 @@
 - 新增根级 `SKILL.md`（Bun 重构版），并补充 `.env.example`
 - 访客推送脚本从 Python 迁移为 `frontend/office-agent-push.mjs`，文档已切换
 - VPS OpenClaw 集成指引已整理：`documents/OPENCLAW_INTEGRATION.md`
+- 交互增强：新增场景悬浮信息层（猫/机柜），并统一支持 `index.html` 与 `electron-standalone.html`
+- 设备监控：新增 `GET /system-info`，前端在机柜区域展示 CPU 负载、内存占用、系统与运行时信息
+- 版本策略：`openclaw` 版本号改为动态探测（`OPENCLAW_VERSION` -> `openclaw --version` -> `codex --version` -> `package.json` 回退）
+- 交互修正：仅保留机柜区域展示机器信息，移除左下桌面显示器热区；猫信息绑定为沙发猫
+- 代码已推送远端：`main` 分支提交 `c593fb7`
 
 ## 是否可部署
 - 后端与前端核心功能已可部署（不含生图）
