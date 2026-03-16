@@ -19,10 +19,88 @@ import { getYesterdayMemo } from "./memo";
 import type { Agent, JoinKeysFile, MainState } from "./types";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { copyFileSafe, fileExists, isSubPath, readImageSize } from "./fileutils";
 
 let joinLock: Promise<void> = Promise.resolve();
 const rateBuckets: Record<string, Map<string, number[]>> = {};
+let cachedPackageVersion = "unknown";
+let packageVersionLoaded = false;
+let cachedOpenclawVersion = "unknown";
+let cachedOpenclawVersionAt = 0;
+
+const OPENCLAW_VERSION_CACHE_MS = 5 * 60 * 1000;
+
+async function getPackageVersion() {
+  if (packageVersionLoaded) return cachedPackageVersion;
+  packageVersionLoaded = true;
+  try {
+    const raw = await fs.readFile(path.resolve(PATHS.projectRoot, "package.json"), "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.version === "string" && parsed.version.trim()) {
+      cachedPackageVersion = parsed.version.trim();
+    }
+  } catch {
+    cachedPackageVersion = "unknown";
+  }
+  return cachedPackageVersion;
+}
+
+function extractVersion(raw: string) {
+  if (!raw) return null;
+  const text = raw.trim();
+  if (!text) return null;
+  const semver = text.match(/\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?/);
+  if (semver) return semver[0];
+  const tail = text.split(/\s+/).pop();
+  return tail || null;
+}
+
+async function runVersionCommand(cmd: string, args: string[]) {
+  try {
+    const proc = Bun.spawn([cmd, ...args], { stdout: "pipe", stderr: "pipe" });
+    const code = await proc.exited;
+    if (code !== 0) return null;
+    const out = await new Response(proc.stdout).text();
+    return out.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getOpenclawVersionDynamic() {
+  const now = Date.now();
+  if (cachedOpenclawVersionAt && (now - cachedOpenclawVersionAt) < OPENCLAW_VERSION_CACHE_MS) {
+    return cachedOpenclawVersion;
+  }
+
+  const envVersion = (process.env.OPENCLAW_VERSION || "").trim();
+  if (envVersion) {
+    cachedOpenclawVersion = envVersion;
+    cachedOpenclawVersionAt = now;
+    return cachedOpenclawVersion;
+  }
+
+  const candidates: Array<[string, string[]]> = [
+    ["openclaw", ["--version"]],
+    ["openclaw", ["version"]],
+    ["codex", ["--version"]]
+  ];
+
+  for (const [cmd, args] of candidates) {
+    const output = await runVersionCommand(cmd, args);
+    const parsed = output ? extractVersion(output) : null;
+    if (parsed) {
+      cachedOpenclawVersion = parsed;
+      cachedOpenclawVersionAt = now;
+      return cachedOpenclawVersion;
+    }
+  }
+
+  cachedOpenclawVersion = await getPackageVersion();
+  cachedOpenclawVersionAt = now;
+  return cachedOpenclawVersion;
+}
 
 async function withJoinLock<T>(fn: () => Promise<T>): Promise<T> {
   const prev = joinLock;
@@ -182,6 +260,44 @@ export async function handleRequest(req: Request) {
     return jsonResponse({
       status: "ok",
       service: "star-office-ui",
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  if (req.method === "GET" && pathName === "/system-info") {
+    const appVersion = await getOpenclawVersionDynamic();
+    const cpuCount = os.cpus()?.length || 1;
+    const loadAvg = os.loadavg();
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = Math.max(0, totalMem - freeMem);
+    const memoryUsedPercent = totalMem > 0 ? Number(((usedMem / totalMem) * 100).toFixed(1)) : 0;
+    const cpuLoadPercentApprox = Number(Math.min(100, (loadAvg[0] / cpuCount) * 100).toFixed(1));
+    return jsonResponse({
+      status: "ok",
+      app: {
+        name: "openclaw",
+        version: appVersion
+      },
+      machine: {
+        hostname: os.hostname(),
+        platform: process.platform,
+        arch: process.arch,
+        cpus: os.cpus()?.length || 0,
+        totalMemoryGB: Number((os.totalmem() / (1024 ** 3)).toFixed(1)),
+        nodeVersion: process.version,
+        bunVersion: typeof Bun !== "undefined" ? Bun.version : "unknown"
+      },
+      metrics: {
+        cpuLoad1m: Number(loadAvg[0].toFixed(2)),
+        cpuLoad5m: Number(loadAvg[1].toFixed(2)),
+        cpuLoad15m: Number(loadAvg[2].toFixed(2)),
+        cpuLoadPercentApprox,
+        memoryUsedGB: Number((usedMem / (1024 ** 3)).toFixed(1)),
+        memoryFreeGB: Number((freeMem / (1024 ** 3)).toFixed(1)),
+        memoryUsedPercent,
+        uptimeHours: Number((os.uptime() / 3600).toFixed(1))
+      },
       timestamp: new Date().toISOString()
     });
   }

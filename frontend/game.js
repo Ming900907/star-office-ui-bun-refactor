@@ -99,6 +99,106 @@ function hideLoadingOverlay() {
   }, 300);
 }
 
+function ensureHoverInfoOverlay() {
+  if (hoverInfoOverlay) return hoverInfoOverlay;
+  const node = document.createElement('div');
+  node.id = 'hover-info-overlay';
+  node.style.position = 'fixed';
+  node.style.display = 'none';
+  node.style.pointerEvents = 'none';
+  node.style.maxWidth = '320px';
+  node.style.padding = '8px 10px';
+  node.style.border = '2px solid #1f2937';
+  node.style.borderRadius = '6px';
+  node.style.background = 'rgba(10, 18, 30, 0.94)';
+  node.style.color = '#f8fafc';
+  node.style.fontFamily = 'ArkPixel, monospace';
+  node.style.fontSize = '12px';
+  node.style.lineHeight = '1.45';
+  node.style.whiteSpace = 'pre-line';
+  node.style.zIndex = '1000000';
+  node.style.boxShadow = '0 8px 18px rgba(0,0,0,0.38)';
+  document.body.appendChild(node);
+  hoverInfoOverlay = node;
+  return node;
+}
+
+function updateHoverInfoPosition(pointer) {
+  if (!hoverInfoOverlay || hoverInfoOverlay.style.display === 'none') return;
+  const clientX = pointer?.event?.clientX;
+  const clientY = pointer?.event?.clientY;
+  if (typeof clientX !== 'number' || typeof clientY !== 'number') return;
+  hoverInfoOverlay.style.left = `${clientX + 16}px`;
+  hoverInfoOverlay.style.top = `${clientY + 16}px`;
+}
+
+function showHoverInfo(pointer, text) {
+  const node = ensureHoverInfoOverlay();
+  node.textContent = text;
+  node.style.display = 'block';
+  updateHoverInfoPosition(pointer);
+}
+
+function hideHoverInfo() {
+  if (!hoverInfoOverlay) return;
+  hoverInfoOverlay.style.display = 'none';
+}
+
+async function loadSystemInfo() {
+  const now = Date.now();
+  if (systemInfoCache && (now - systemInfoCachedAt) < SYSTEM_INFO_CACHE_MS) return systemInfoCache;
+  if (systemInfoLoadingPromise) return systemInfoLoadingPromise;
+  systemInfoLoadingPromise = fetch('/system-info?t=' + Date.now(), { cache: 'no-store' })
+    .then((resp) => resp.json())
+    .then((data) => {
+      systemInfoCache = data;
+      systemInfoCachedAt = Date.now();
+      return data;
+    })
+    .catch(() => ({
+      status: 'error',
+      app: { name: 'openclaw', version: 'unknown' },
+      machine: {
+        hostname: 'unknown',
+        platform: 'unknown',
+        arch: 'unknown',
+        cpus: 0,
+        totalMemoryGB: 0,
+        nodeVersion: 'unknown',
+        bunVersion: 'unknown'
+      }
+    }))
+    .finally(() => {
+      systemInfoLoadingPromise = null;
+    });
+  return systemInfoLoadingPromise;
+}
+
+function formatOpenclwaInfo(data) {
+  const app = data?.app || {};
+  return [
+    `${app.name || 'openclaw'}`,
+    `版本: ${app.version || 'unknown'}`,
+    '状态: 运行中'
+  ].join('\n');
+}
+
+function formatMachineInfo(data) {
+  const machine = data?.machine || {};
+  const metrics = data?.metrics || {};
+  return [
+    '部署机器配置',
+    `主机: ${machine.hostname || 'unknown'}`,
+    `系统: ${machine.platform || 'unknown'} (${machine.arch || 'unknown'})`,
+    `CPU 核数: ${machine.cpus ?? 0}`,
+    `内存: ${machine.totalMemoryGB ?? 0} GB`,
+    `CPU 负载: ${metrics.cpuLoadPercentApprox ?? 0}% (1m:${metrics.cpuLoad1m ?? 0})`,
+    `内存占用: ${metrics.memoryUsedGB ?? 0} / ${machine.totalMemoryGB ?? 0} GB (${metrics.memoryUsedPercent ?? 0}%)`,
+    `Node: ${machine.nodeVersion || 'unknown'}`,
+    `Bun: ${machine.bunVersion || 'unknown'}`
+  ].join('\n');
+}
+
 const STATES = {
   idle: { name: '待命', area: 'breakroom' },
   writing: { name: '整理文档', area: 'writing' },
@@ -192,6 +292,12 @@ let isMoving = false;
 let waypoints = [];
 let lastWanderAt = 0;
 let coordsOverlay, coordsDisplay, coordsToggle;
+let hoverInfoOverlay = null;
+let systemInfoCache = null;
+let systemInfoLoadingPromise = null;
+let systemInfoCachedAt = 0;
+const SYSTEM_INFO_CACHE_MS = 3000;
+let hoverInfoRequestId = 0;
 let showCoords = false;
 const FETCH_INTERVAL = 2000;
 const BLINK_INTERVAL = 2500;
@@ -425,6 +531,19 @@ function create() {
     const next = Math.floor(Math.random() * window.catsFrameCount);
     window.catSprite.setFrame(next);
   });
+  cat.on('pointerover', async (pointer) => {
+    const reqId = ++hoverInfoRequestId;
+    const info = await loadSystemInfo();
+    if (reqId !== hoverInfoRequestId) return;
+    showHoverInfo(pointer, formatOpenclwaInfo(info));
+  });
+  cat.on('pointermove', (pointer) => {
+    updateHoverInfoPosition(pointer);
+  });
+  cat.on('pointerout', () => {
+    hoverInfoRequestId++;
+    hideHoverInfo();
+  });
 
   // === 咖啡机（来自 LAYOUT）===
   this.anims.create({
@@ -455,8 +574,23 @@ function create() {
     0
   ).setOrigin(LAYOUT.furniture.serverroom.origin.x, LAYOUT.furniture.serverroom.origin.y);
   serverroom.setDepth(LAYOUT.furniture.serverroom.depth);
+  serverroom.setInteractive({ useHandCursor: true });
   serverroom.anims.stop();
   serverroom.setFrame(0);
+  serverroom.on('pointerover', async (pointer) => {
+    const reqId = ++hoverInfoRequestId;
+    systemInfoCachedAt = 0;
+    const info = await loadSystemInfo();
+    if (reqId !== hoverInfoRequestId) return;
+    showHoverInfo(pointer, formatMachineInfo(info));
+  });
+  serverroom.on('pointermove', (pointer) => {
+    updateHoverInfoPosition(pointer);
+  });
+  serverroom.on('pointerout', () => {
+    hoverInfoRequestId++;
+    hideHoverInfo();
+  });
 
   // === 新办公桌（来自 LAYOUT，强制透明 PNG）===
   const desk = this.add.image(
