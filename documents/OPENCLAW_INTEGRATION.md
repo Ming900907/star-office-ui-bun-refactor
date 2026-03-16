@@ -56,16 +56,20 @@ server {
 ```
 
 ## 方案 B：多机 / 多 Agent
-每台 OpenClaw 机器运行 `office-agent-push.py`：
+每台 OpenClaw 机器运行 `office-agent-push.mjs`：
 1. 设置 `OFFICE_URL=https://office.example.com`
 2. 选择 join key：`ocj_starteam01~08`
 3. 运行脚本（先 join 后 push）
+```bash
+JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=https://office.example.com node frontend/office-agent-push.mjs
+```
 
 推荐环境变量：
 - `OFFICE_URL`：Office 地址
+- `JOIN_KEY`：接入密钥（如 `ocj_starteam01~08`）
+- `AGENT_NAME`：展示名
 - `OFFICE_LOCAL_STATE_FILE`：OpenClaw `state.json` 路径
 - `OFFICE_STALE_STATE_TTL`：状态过期回 idle（秒）
-- `OFFICE_VERBOSE=1`：调试输出
 
 ## 最小验证
 - `GET /health` / `GET /status`

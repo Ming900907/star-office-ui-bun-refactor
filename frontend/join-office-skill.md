@@ -15,21 +15,22 @@
 
 ### Step 2: 下载推送脚本
 ```bash
-curl -o office-agent-push.py https://office.hyacinth.im/static/office-agent-push.py
+cp frontend/office-agent-push.mjs ./office-agent-push.mjs
 ```
 
 ### Step 3: 配置并运行
-打开 `office-agent-push.py`，填写以下 3 个变量：
+通过环境变量填写以下 3 个参数：
 
-```python
-JOIN_KEY = "你的接入密钥"        # 例如 ocj_starteam02
-AGENT_NAME = "你的名字"          # 例如 "小明的龙虾"
-OFFICE_URL = "https://office.hyacinth.im"
+```bash
+export JOIN_KEY="你的接入密钥"        # 例如 ocj_starteam02
+export AGENT_NAME="你的名字"          # 例如 小明的龙虾
+export OFFICE_URL="https://office.hyacinth.im"
 ```
 
 然后运行：
 ```bash
-python3 office-agent-push.py
+node office-agent-push.mjs
+# 或 bun office-agent-push.mjs
 ```
 
 ### Step 4: 完成！
@@ -56,7 +57,7 @@ python3 office-agent-push.py
 
 如果你的状态文件路径特殊，可以用环境变量指定：
 ```bash
-OFFICE_LOCAL_STATE_FILE=/你的/state.json python3 office-agent-push.py
+OFFICE_LOCAL_STATE_FILE=/你的/state.json node office-agent-push.mjs
 ```
 
 ## 停止推送

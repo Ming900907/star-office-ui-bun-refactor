@@ -27,7 +27,8 @@ This refactor:
 # 1) install deps (bun runtime required)
 ~/.bun/bin/bun install
 
-# 2) init state files (first run)
+# 2) init env + state files (first run)
+cp .env.example .env
 cp state.sample.json state.json
 cp join-keys.sample.json join-keys.json
 
@@ -40,6 +41,23 @@ Open: `http://127.0.0.1:19000`
 - `PORT` (default `19000`)
 - `HOST` (default `127.0.0.1`)
 - `ASSET_DRAWER_PASS` (default `1234`)
+- See `.env.example` for a full template.
+
+## Agent State Commands
+```bash
+~/.bun/bin/bun run state:writing
+~/.bun/bin/bun run state:syncing
+~/.bun/bin/bun run state:error
+~/.bun/bin/bun run state:idle
+```
+
+Equivalent explicit command:
+```bash
+~/.bun/bin/bun run scripts/set-state.ts writing "正在整理文档"
+```
+
+## Agent Push Script (JS)
+Use `frontend/office-agent-push.mjs` for join + periodic push (no Python dependency required).
 
 ## Data Files
 See `documents/DATA_FILES.md`.

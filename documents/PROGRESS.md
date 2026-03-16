@@ -17,6 +17,9 @@
 - 补齐：/assets/template.zip 提示与模板包；/assets/list 图片宽高；join key 对齐 ocj_starteam01~08
 - Electron 路线暂时放弃，当前阶段以 Bun Web 服务为唯一交付目标
 - 识别到仓库含 sample/测试用途文件，且 Bun 在 `join-keys.json` 缺失时会自动回退 `join-keys.sample.json`
+- 新增 Bun 版状态脚本 `scripts/set-state.ts` 与 `state:writing/syncing/error/idle` 快捷命令
+- 新增根级 `SKILL.md`（Bun 重构版），并补充 `.env.example`
+- 访客推送脚本从 Python 迁移为 `frontend/office-agent-push.mjs`，文档已切换
 - VPS OpenClaw 集成指引已整理：`documents/OPENCLAW_INTEGRATION.md`
 
 ## 是否可部署

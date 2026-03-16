@@ -8,6 +8,7 @@ join-keys.json
 asset-positions.json
 asset-defaults.json
 runtime-config.json
+office-agent-state.json
 
 # Runtime storage
 storage/**
@@ -30,3 +31,4 @@ build/
 # OS/editor noise
 .DS_Store
 *.log
+.env

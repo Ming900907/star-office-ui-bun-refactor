@@ -5,6 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "bun run server/index.ts",
-    "start": "bun run server/index.ts"
+    "start": "bun run server/index.ts",
+    "state": "bun run scripts/set-state.ts",
+    "state:writing": "bun run scripts/set-state.ts writing \"正在整理文档\"",
+    "state:syncing": "bun run scripts/set-state.ts syncing \"同步进度中\"",
+    "state:error": "bun run scripts/set-state.ts error \"发现问题，排查中\"",
+    "state:idle": "bun run scripts/set-state.ts idle \"待命中\""
   }
 }
