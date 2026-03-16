@@ -1,0 +1,10 @@
+{
+  "name": "star-office-ui-bun-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run server/index.ts",
+    "start": "bun run server/index.ts"
+  }
+}
