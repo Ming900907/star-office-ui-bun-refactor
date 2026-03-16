@@ -22,7 +22,17 @@ export const PATHS = {
 export const SERVER = {
   host: process.env.HOST || "127.0.0.1",
   port: Number(process.env.PORT || 19000),
-  assetDrawerPass: process.env.ASSET_DRAWER_PASS || "1234"
+  assetDrawerPass: process.env.ASSET_DRAWER_PASS || "1234",
+  assetAuthCookieSecure: ["1", "true", "yes", "on"].includes((process.env.ASSET_AUTH_COOKIE_SECURE || "1").toLowerCase()),
+  maxUploadBytes: Number(process.env.ASSET_MAX_UPLOAD_BYTES || 10 * 1024 * 1024)
+};
+
+export const SECURITY = {
+  env: process.env.STAR_OFFICE_ENV || "development",
+  isProduction: (process.env.STAR_OFFICE_ENV || "development").toLowerCase() === "production",
+  apiToken: process.env.STAR_OFFICE_API_TOKEN || "",
+  authRateLimitPerMinute: Number(process.env.AUTH_RATE_LIMIT_PER_MIN || 20),
+  joinRateLimitPerMinute: Number(process.env.JOIN_RATE_LIMIT_PER_MIN || 60)
 };
 
 export const FLAGS = {

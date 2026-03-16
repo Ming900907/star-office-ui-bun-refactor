@@ -41,7 +41,15 @@ Open: `http://127.0.0.1:19000`
 - `PORT` (default `19000`)
 - `HOST` (default `127.0.0.1`)
 - `ASSET_DRAWER_PASS` (default `1234`)
+- `STAR_OFFICE_ENV` (`development` or `production`)
+- `STAR_OFFICE_API_TOKEN` (required in `production`)
 - See `.env.example` for a full template.
+
+## Security Notes (VPS)
+- In production mode (`STAR_OFFICE_ENV=production`), startup will fail if `ASSET_DRAWER_PASS` is default or `STAR_OFFICE_API_TOKEN` is missing.
+- Sensitive write APIs (`/set_state`, `/agent-approve`, `/agent-reject`, `/leave-agent`) require `Authorization: Bearer <STAR_OFFICE_API_TOKEN>`.
+- `/agents` output is sanitized and no longer exposes `joinKey`.
+- Basic in-memory rate limiting is enabled for `/assets/auth` and `/join-agent`.
 
 ## Agent State Commands
 ```bash
@@ -53,6 +61,7 @@ Open: `http://127.0.0.1:19000`
 
 Equivalent explicit command:
 ```bash
+export STAR_OFFICE_API_TOKEN=your_token
 ~/.bun/bin/bun run scripts/set-state.ts writing "正在整理文档"
 ```
 

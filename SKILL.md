@@ -36,7 +36,12 @@ cp .env.example .env
 cp state.sample.json state.json
 cp join-keys.sample.json join-keys.json
 
-# 4) 启动 Bun 服务
+# 4) 生产环境务必设置安全项（本地体验可跳过）
+export ASSET_DRAWER_PASS="replace_with_strong_password"
+export STAR_OFFICE_API_TOKEN="replace_with_long_random_token"
+export STAR_OFFICE_ENV=production
+
+# 5) 启动 Bun 服务
 ~/.bun/bin/bun run server/index.ts
 ```
 
@@ -50,19 +55,19 @@ cp join-keys.sample.json join-keys.json
 ### 2.1 推荐：快捷命令（最省心）
 
 ```bash
-~/.bun/bin/bun run state:writing
-~/.bun/bin/bun run state:syncing
-~/.bun/bin/bun run state:error
-~/.bun/bin/bun run state:idle
+STAR_OFFICE_API_TOKEN=your_token ~/.bun/bin/bun run state:writing
+STAR_OFFICE_API_TOKEN=your_token ~/.bun/bin/bun run state:syncing
+STAR_OFFICE_API_TOKEN=your_token ~/.bun/bin/bun run state:error
+STAR_OFFICE_API_TOKEN=your_token ~/.bun/bin/bun run state:idle
 ```
 
 ### 2.2 显式命令（可自定义文案）
 
 ```bash
-~/.bun/bin/bun run scripts/set-state.ts writing "正在整理文档"
-~/.bun/bin/bun run scripts/set-state.ts syncing "同步进度中"
-~/.bun/bin/bun run scripts/set-state.ts error "发现问题，排查中"
-~/.bun/bin/bun run scripts/set-state.ts idle "待命中"
+STAR_OFFICE_API_TOKEN=your_token ~/.bun/bin/bun run scripts/set-state.ts writing "正在整理文档"
+STAR_OFFICE_API_TOKEN=your_token ~/.bun/bin/bun run scripts/set-state.ts syncing "同步进度中"
+STAR_OFFICE_API_TOKEN=your_token ~/.bun/bin/bun run scripts/set-state.ts error "发现问题，排查中"
+STAR_OFFICE_API_TOKEN=your_token ~/.bun/bin/bun run scripts/set-state.ts idle "待命中"
 ```
 
 ### 2.3 离线兜底（服务没启动也能改）

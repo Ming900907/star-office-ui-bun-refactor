@@ -1,4 +1,4 @@
-import { PATHS, SERVER, VALID_AGENT_STATES } from "./config";
+import { PATHS, SECURITY, SERVER, VALID_AGENT_STATES } from "./config";
 import { applyAutoIdle, DEFAULT_AGENTS, normalizeAgentState, readOfficeNameFromIdentity, stateToArea } from "./utils";
 import {
   loadAgentsState,
@@ -22,6 +22,8 @@ import path from "node:path";
 import { copyFileSafe, fileExists, isSubPath, readImageSize } from "./fileutils";
 
 let joinLock: Promise<void> = Promise.resolve();
+const rateBuckets: Record<string, Map<string, number[]>> = {};
+
 async function withJoinLock<T>(fn: () => Promise<T>): Promise<T> {
   const prev = joinLock;
   let release: () => void = () => undefined;
@@ -43,6 +45,27 @@ function jsonResponse(data: unknown, status = 200) {
   });
 }
 
+function getClientIp(req: Request) {
+  const cf = (req.headers.get("cf-connecting-ip") || "").trim();
+  if (cf) return cf;
+  const xr = (req.headers.get("x-real-ip") || "").trim();
+  if (xr) return xr;
+  const xff = (req.headers.get("x-forwarded-for") || "").trim();
+  if (xff) return xff.split(",")[0].trim();
+  return "unknown";
+}
+
+function hitRateLimit(bucket: string, key: string, maxHits: number, windowMs = 60_000) {
+  const now = Date.now();
+  if (!rateBuckets[bucket]) rateBuckets[bucket] = new Map();
+  const store = rateBuckets[bucket];
+  const arr = store.get(key) || [];
+  const fresh = arr.filter((ts) => now - ts < windowMs);
+  fresh.push(now);
+  store.set(key, fresh);
+  return fresh.length > maxHits;
+}
+
 function textResponse(body: string, status = 200, contentType = "text/html; charset=utf-8") {
   return new Response(body, { status, headers: { "Content-Type": contentType } });
 }
@@ -57,6 +80,10 @@ async function readBodyJson(req: Request) {
 
 function withNoCacheHeaders(resp: Response, pathName: string) {
   const headers = new Headers(resp.headers);
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("X-Frame-Options", "DENY");
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
   if (pathName.startsWith("/static/") && resp.status >= 200 && resp.status < 300) {
     headers.set("Cache-Control", "public, max-age=31536000, immutable");
     headers.delete("Pragma");
@@ -97,6 +124,16 @@ function isAssetAuthed(req: Request) {
   return getCookie(req, "asset_editor_authed") === "1";
 }
 
+function requireApiToken(req: Request) {
+  if (!SECURITY.apiToken) return null;
+  const auth = req.headers.get("authorization") || "";
+  const xToken = req.headers.get("x-office-token") || "";
+  const bearer = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  const got = bearer || xToken.trim();
+  if (got === SECURITY.apiToken) return null;
+  return jsonResponse({ ok: false, code: "FORBIDDEN", msg: "invalid api token" }, 403);
+}
+
 function requireAssetAuth(req: Request) {
   if (isAssetAuthed(req)) return null;
   return jsonResponse({ ok: false, code: "UNAUTHORIZED", msg: "Asset editor auth required" }, 401);
@@ -120,6 +157,10 @@ async function ensureJoinKeysFile() {
   try {
     await fs.access(PATHS.joinKeysFile);
   } catch {
+    if (SECURITY.isProduction) {
+      await fs.writeFile(PATHS.joinKeysFile, JSON.stringify({ keys: [] }, null, 2), "utf-8");
+      return;
+    }
     const sample = path.resolve(PATHS.projectRoot, "join-keys.sample.json");
     if (await fileExists(sample)) {
       const raw = await fs.readFile(sample, "utf-8");
@@ -158,6 +199,8 @@ export async function handleRequest(req: Request) {
   }
 
   if (req.method === "POST" && pathName === "/set_state") {
+    const guard = requireApiToken(req);
+    if (guard) return guard;
     const data = await readBodyJson(req);
     if (!data || typeof data !== "object") {
       return jsonResponse({ status: "error", msg: "invalid json" }, 400);
@@ -224,10 +267,18 @@ export async function handleRequest(req: Request) {
 
     await saveAgentsState(cleaned);
     await saveJoinKeys(keys);
-    return jsonResponse(cleaned);
+    const safe = cleaned.map((a) => {
+      const { joinKey: _jk, ...rest } = a as Agent & { joinKey?: string };
+      return rest;
+    });
+    return jsonResponse(safe);
   }
 
   if (req.method === "POST" && pathName === "/join-agent") {
+    const ip = getClientIp(req);
+    if (hitRateLimit("join-agent", ip, SECURITY.joinRateLimitPerMinute)) {
+      return jsonResponse({ ok: false, msg: "请求过于频繁，请稍后重试" }, 429);
+    }
     const data = await readBodyJson(req);
     if (!data || typeof data !== "object" || !data.name) {
       return jsonResponse({ ok: false, msg: "请提供名字" }, 400);
@@ -342,6 +393,8 @@ export async function handleRequest(req: Request) {
   }
 
   if (req.method === "POST" && pathName === "/agent-approve") {
+    const guard = requireApiToken(req);
+    if (guard) return guard;
     const data = await readBodyJson(req);
     const agentId = String(data?.agentId || "").trim();
     if (!agentId) return jsonResponse({ ok: false, msg: "缺少 agentId" }, 400);
@@ -356,6 +409,8 @@ export async function handleRequest(req: Request) {
   }
 
   if (req.method === "POST" && pathName === "/agent-reject") {
+    const guard = requireApiToken(req);
+    if (guard) return guard;
     const data = await readBodyJson(req);
     const agentId = String(data?.agentId || "").trim();
     if (!agentId) return jsonResponse({ ok: false, msg: "缺少 agentId" }, 400);
@@ -382,6 +437,8 @@ export async function handleRequest(req: Request) {
   }
 
   if (req.method === "POST" && pathName === "/leave-agent") {
+    const guard = requireApiToken(req);
+    if (guard) return guard;
     const data = await readBodyJson(req);
     if (!data || typeof data !== "object") return jsonResponse({ ok: false, msg: "invalid json" }, 400);
     const agentId = String(data.agentId || "").trim();
@@ -470,11 +527,16 @@ export async function handleRequest(req: Request) {
   }
 
   if (pathName === "/assets/auth" && req.method === "POST") {
+    const ip = getClientIp(req);
+    if (hitRateLimit("assets-auth", ip, SECURITY.authRateLimitPerMinute)) {
+      return jsonResponse({ ok: false, msg: "认证请求过于频繁，请稍后再试" }, 429);
+    }
     const data = await readBodyJson(req);
     const pwd = String(data?.password || "").trim();
     if (pwd && pwd === SERVER.assetDrawerPass) {
       const headers = new Headers({ "Content-Type": "application/json; charset=utf-8" });
-      headers.append("Set-Cookie", "asset_editor_authed=1; Path=/; HttpOnly; SameSite=Lax");
+      const secureAttr = SERVER.assetAuthCookieSecure ? "; Secure" : "";
+      headers.append("Set-Cookie", `asset_editor_authed=1; Path=/; HttpOnly; SameSite=Lax${secureAttr}`);
       return new Response(JSON.stringify({ ok: true, msg: "认证成功" }), { status: 200, headers });
     }
     return jsonResponse({ ok: false, msg: "验证码错误" }, 401);
@@ -501,11 +563,16 @@ export async function handleRequest(req: Request) {
     let scale = data?.scale;
     if (!key) return jsonResponse({ ok: false, msg: "缺少 key" }, 400);
     if (x === undefined || y === undefined) return jsonResponse({ ok: false, msg: "缺少 x/y" }, 400);
-    const allPos = await loadAssetPositions();
+    const nx = Number(x);
+    const ny = Number(y);
     scale = scale === undefined ? 1.0 : Number(scale);
-    allPos[key] = { x: Number(x), y: Number(y), scale, updated_at: new Date().toISOString() };
+    if (!Number.isFinite(nx) || !Number.isFinite(ny) || !Number.isFinite(scale)) {
+      return jsonResponse({ ok: false, msg: "x/y/scale 必须为有限数值" }, 400);
+    }
+    const allPos = await loadAssetPositions();
+    allPos[key] = { x: nx, y: ny, scale, updated_at: new Date().toISOString() };
     await saveAssetPositions(allPos);
-    return jsonResponse({ ok: true, key, x: Number(x), y: Number(y), scale });
+    return jsonResponse({ ok: true, key, x: nx, y: ny, scale });
   }
 
   if (pathName === "/assets/defaults" && req.method === "GET") {
@@ -525,11 +592,16 @@ export async function handleRequest(req: Request) {
     let scale = data?.scale;
     if (!key) return jsonResponse({ ok: false, msg: "缺少 key" }, 400);
     if (x === undefined || y === undefined) return jsonResponse({ ok: false, msg: "缺少 x/y" }, 400);
-    const allDefaults = await loadAssetDefaults();
+    const nx = Number(x);
+    const ny = Number(y);
     scale = scale === undefined ? 1.0 : Number(scale);
-    allDefaults[key] = { x: Number(x), y: Number(y), scale, updated_at: new Date().toISOString() };
+    if (!Number.isFinite(nx) || !Number.isFinite(ny) || !Number.isFinite(scale)) {
+      return jsonResponse({ ok: false, msg: "x/y/scale 必须为有限数值" }, 400);
+    }
+    const allDefaults = await loadAssetDefaults();
+    allDefaults[key] = { x: nx, y: ny, scale, updated_at: new Date().toISOString() };
     await saveAssetDefaults(allDefaults);
-    return jsonResponse({ ok: true, key, x: Number(x), y: Number(y), scale });
+    return jsonResponse({ ok: true, key, x: nx, y: ny, scale });
   }
 
   if (pathName === "/assets/list" && req.method === "GET") {
@@ -592,6 +664,9 @@ export async function handleRequest(req: Request) {
     }
     if (!(await fileExists(target))) {
       return jsonResponse({ ok: false, msg: "目标文件不存在，请先从 /assets/list 选择 path" }, 404);
+    }
+    if (file.size > SERVER.maxUploadBytes) {
+      return jsonResponse({ ok: false, msg: `文件过大，最大允许 ${SERVER.maxUploadBytes} bytes` }, 413);
     }
     await fs.mkdir(path.dirname(target), { recursive: true });
 

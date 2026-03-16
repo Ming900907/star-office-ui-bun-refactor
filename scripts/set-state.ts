@@ -7,6 +7,7 @@ const projectRoot = path.resolve(import.meta.dir, "..");
 const stateFile = process.env.STAR_OFFICE_STATE_FILE || path.resolve(projectRoot, "state.json");
 const baseUrl = (process.env.STAR_OFFICE_URL || "http://127.0.0.1:19000").replace(/\/+$/, "");
 const mode = (process.env.STAR_OFFICE_SET_STATE_MODE || "http").toLowerCase();
+const apiToken = (process.env.STAR_OFFICE_API_TOKEN || "").trim();
 
 function usage() {
   console.log("Usage: bun run scripts/set-state.ts <state> [detail]");
@@ -24,9 +25,11 @@ function usage() {
 }
 
 async function setByHttp(state: string, detail: string) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (apiToken) headers.Authorization = `Bearer ${apiToken}`;
   const res = await fetch(`${baseUrl}/set_state`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ state, detail })
   });
 
