@@ -8,7 +8,7 @@
 ## 范围
 - 后端服务（Bun）与 Web 前端联调
 - 前端改造为 OpenClaw 技能 + 用量追踪入口
-- 生产环境支持 OpenClaw 数据源多模式（upstream URL 或本机 CLI）
+- 生产环境支持 OpenClaw sync/cache 模式（OpenClaw 调用接口，服务端执行本机 CLI）
 
 ## 不做
 - 不实现生图
@@ -28,7 +28,7 @@
 - 存储：state/agents/join-keys/asset-positions/defaults
 - API：/status /agents /join-agent /agent-push /yesterday-memo /openclaw/skills /openclaw/usage /agent-skills/*
 - 数据初始化：区分 sample 文件与生产文件，避免回退 sample 造成误接入
-- 数据源接入：优先 `OPENCLAW_*_SOURCE_URL`，未配置时走本机 CLI
+- 数据源接入：OpenClaw 调用 `/openclaw/sync`，服务端执行本机 CLI 并写入缓存
 - 生产策略：允许配置 strict 模式，禁止 degraded fallback 混入正式验收
 - 回归：主页面、技能面板、用量面板、多 Agent 状态链路
 
@@ -36,7 +36,7 @@
 - Bun 兼容性
 - 文件并发写
 - sample 数据误用于生产环境
-- 上游 source 或本机 CLI 不可用时，技能/用量面板会退化为 fallback
+- OpenClaw 未同步、缓存过期或本机 CLI 不可用时，技能/用量面板会退化为 fallback
 - strict 策略与默认降级策略的运维理解不一致
 
 ## 交付物

@@ -1,7 +1,15 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { PATHS } from "./config";
-import type { Agent, AssetDefaults, AssetPositions, JoinKeysFile, MainState } from "./types";
+import type {
+  Agent,
+  AssetDefaults,
+  AssetPositions,
+  JoinKeysFile,
+  MainState,
+  OpenclawSkillsCache,
+  OpenclawUsageCache
+} from "./types";
 
 const writeQueue: Record<string, Promise<void>> = {};
 
@@ -76,6 +84,26 @@ export async function loadJoinKeys(): Promise<JoinKeysFile> {
 
 export async function saveJoinKeys(data: JoinKeysFile) {
   await enqueueWrite(PATHS.joinKeysFile, data);
+}
+
+export async function loadOpenclawSkillsCache(): Promise<OpenclawSkillsCache | null> {
+  const loaded = await readJson<OpenclawSkillsCache>(PATHS.openclawSkillsCacheFile);
+  if (!loaded || typeof loaded !== "object") return null;
+  return loaded;
+}
+
+export async function saveOpenclawSkillsCache(data: OpenclawSkillsCache) {
+  await enqueueWrite(PATHS.openclawSkillsCacheFile, data);
+}
+
+export async function loadOpenclawUsageCache(): Promise<OpenclawUsageCache | null> {
+  const loaded = await readJson<OpenclawUsageCache>(PATHS.openclawUsageCacheFile);
+  if (!loaded || typeof loaded !== "object") return null;
+  return loaded;
+}
+
+export async function saveOpenclawUsageCache(data: OpenclawUsageCache) {
+  await enqueueWrite(PATHS.openclawUsageCacheFile, data);
 }
 
 export async function loadAssetPositions(): Promise<AssetPositions> {

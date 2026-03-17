@@ -17,8 +17,8 @@
 | GET | `/health` | 健康检查 |
 | GET | `/status` | 主 Agent 状态（可含 officeName） |
 | GET | `/system-info` | 运行节点信息（openclaw 版本、CPU/内存指标、Node/Bun 版本） |
-| GET | `/openclaw/skills` | OpenClaw 技能目录（优先上游 URL，其次本机 CLI，再次本地 fallback；strict 模式下可视为失败） |
-| GET | `/openclaw/usage` | OpenClaw 用量视图（模型/渠道/token/成本；优先上游 URL，其次本机 CLI，再次本地 fallback；strict 模式下可视为失败） |
+| GET | `/openclaw/skills` | OpenClaw 技能目录（读取服务端缓存；strict 模式下 degraded 缓存会失败） |
+| GET | `/openclaw/usage` | OpenClaw 用量视图（读取服务端缓存；strict 模式下 degraded 缓存会失败） |
 | POST | `/set_state` | 旧接口：设置主状态（默认关闭，走 skills） |
 | GET | `/agents` | Agent 列表 |
 | POST | `/join-agent` | 访客加入（自动批准；并发超限 429） |
@@ -26,6 +26,7 @@
 | POST | `/agent-reject` | 拒绝并移除 |
 | POST | `/leave-agent` | 离开并释放 key（管理员或自助离开） |
 | POST | `/agent-push` | 推送状态 |
+| POST | `/openclaw/sync` | OpenClaw/Agent 主动触发 skills + usage CLI 同步并刷新缓存 |
 | POST | `/agent-skills/list` | 列出 OpenClaw 可用技能 |
 | POST | `/agent-skills/execute` | 以技能方式执行状态/装修能力 |
 | GET | `/yesterday-memo` | 昨日小记 |
@@ -67,5 +68,6 @@
 - `/system-info`：新增设备指标输出（Linux/macOS 通用；Windows 下 `loadavg` 不具代表性）
 - 新增 feature flags：`ENABLE_STATE_CONTROL`、`ENABLE_ASSET_DECORATION`、`ENABLE_AGENT_SKILLS_API`
 - 默认策略：`/set_state` 与 `/assets/*` 下线（410），统一迁移到 `/agent-skills/execute`
-- source 配置为可选：未配置时自动回退本机 OpenClaw CLI（`skills list --json`、`status --usage --json`）
+- panel 数据链路：由 OpenClaw 调用 `/openclaw/sync`，服务端执行本机 CLI 并缓存，前端仅读取缓存
+- 缓存字段：`syncedAt`、`stale`、`cacheAgeSeconds`、`degraded`、`warnings`
 - 可选 strict 策略：`OPENCLAW_REQUIRE_HEALTHY_SOURCE=1` 时，skills/usage 降级不再视为可接受状态

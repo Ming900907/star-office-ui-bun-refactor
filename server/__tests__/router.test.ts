@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { PATHS, SECURITY } from "../config";
 import { handleRequest, __resetRouterForTests } from "../router";
 import { createDefaultMainState } from "../storage";
@@ -13,7 +15,9 @@ type BackupEntry = {
 const BACKUP_TARGETS = [
   PATHS.stateFile,
   PATHS.agentsStateFile,
-  PATHS.joinKeysFile
+  PATHS.joinKeysFile,
+  PATHS.openclawSkillsCacheFile,
+  PATHS.openclawUsageCacheFile
 ];
 
 const backups = new Map<string, BackupEntry>();
@@ -21,6 +25,7 @@ const originalOpenclawBin = process.env.OPENCLAW_BIN;
 const originalSkillsSource = process.env.OPENCLAW_SKILLS_SOURCE_URL;
 const originalUsageSource = process.env.OPENCLAW_USAGE_SOURCE_URL;
 const originalRequireHealthySource = process.env.OPENCLAW_REQUIRE_HEALTHY_SOURCE;
+let fakeOpenclawBinPath = "";
 
 async function backupFile(filePath: string) {
   try {
@@ -50,6 +55,8 @@ async function seedRuntimeFiles() {
       { key: "ocj_test_2", used: false, reusable: true, maxConcurrent: 3, usedBy: null, usedByAgentId: null, usedAt: null }
     ]
   }, null, 2), "utf-8");
+  await fs.rm(PATHS.openclawSkillsCacheFile, { force: true });
+  await fs.rm(PATHS.openclawUsageCacheFile, { force: true });
 }
 
 async function requestJson(pathName: string, init?: RequestInit) {
@@ -70,6 +77,7 @@ beforeAll(async () => {
   for (const filePath of BACKUP_TARGETS) {
     await backupFile(filePath);
   }
+  fakeOpenclawBinPath = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-fake-")), "openclaw");
 });
 
 beforeEach(async () => {
@@ -90,7 +98,32 @@ afterAll(async () => {
   process.env.OPENCLAW_USAGE_SOURCE_URL = originalUsageSource;
   process.env.OPENCLAW_REQUIRE_HEALTHY_SOURCE = originalRequireHealthySource;
   __resetRouterForTests();
+  if (fakeOpenclawBinPath) {
+    await fs.rm(path.dirname(fakeOpenclawBinPath), { recursive: true, force: true });
+  }
 });
+
+async function installFakeOpenclawCli() {
+  const script = `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "skills" && "$2" == "list" ]]; then
+  cat <<'JSON'
+{"skills":[{"id":"openclaw.set-main-state","name":"Set Main State","description":"sync state","inputSchema":{"state":"string"}}]}
+JSON
+  exit 0
+fi
+if [[ "$1" == "status" ]]; then
+  cat <<'JSON'
+{"summary":{"inputTokens":12,"outputTokens":8,"totalTokens":20,"estimatedCostUsd":0.0002},"byModel":[{"model":"fake-openclaw","inputTokens":12,"outputTokens":8,"totalTokens":20,"estimatedCostUsd":0.0002}],"byChannel":[{"channel":"openclaw","inputTokens":12,"outputTokens":8,"totalTokens":20,"estimatedCostUsd":0.0002}]}
+JSON
+  exit 0
+fi
+echo "unsupported args: $*" >&2
+exit 1
+`;
+  await fs.writeFile(fakeOpenclawBinPath, script, "utf-8");
+  await fs.chmod(fakeOpenclawBinPath, 0o755);
+}
 
 describe("router high-risk flows", () => {
   test("join-agent rejects duplicate names unless reconnecting with the same agentId", async () => {
@@ -148,10 +181,8 @@ describe("router high-risk flows", () => {
     expect(JSON.stringify(agents.body)).not.toContain("joinKey");
   });
 
-  test("skills and usage endpoints expose degraded metadata when only fallback data is available", async () => {
+  test("skills and usage endpoints expose degraded metadata when cache is missing", async () => {
     process.env.OPENCLAW_BIN = "definitely-missing-openclaw-bin";
-    delete process.env.OPENCLAW_SKILLS_SOURCE_URL;
-    delete process.env.OPENCLAW_USAGE_SOURCE_URL;
     __resetRouterForTests();
 
     const skills = await requestJson("/openclaw/skills");
@@ -159,6 +190,8 @@ describe("router high-risk flows", () => {
     expect(skills.body?.ok).toBe(true);
     expect(skills.body?.degraded).toBe(true);
     expect(skills.body?.source).toBe("local-catalog-fallback");
+    expect(skills.body?.stale).toBe(false);
+    expect(typeof skills.body?.syncedAt).toBe("string");
     expect(Array.isArray(skills.body?.warnings)).toBe(true);
     expect(skills.body.warnings.length).toBeGreaterThan(0);
 
@@ -167,6 +200,8 @@ describe("router high-risk flows", () => {
     expect(usage.body?.ok).toBe(true);
     expect(usage.body?.degraded).toBe(true);
     expect(usage.body?.mode).toBe("estimated");
+    expect(usage.body?.stale).toBe(false);
+    expect(typeof usage.body?.syncedAt).toBe("string");
     expect(Array.isArray(usage.body?.warnings)).toBe(true);
     expect(usage.body.warnings.length).toBeGreaterThan(0);
   });
@@ -191,6 +226,46 @@ describe("router high-risk flows", () => {
     expect(usage.body?.code).toBe("DEGRADED_OPENCLAW_SOURCE");
     expect(usage.body?.kind).toBe("usage");
     expect(usage.body?.strict).toBe(true);
+  });
+
+  test("openclaw sync endpoint executes CLI and refreshes cached skills and usage", async () => {
+    await installFakeOpenclawCli();
+    process.env.OPENCLAW_BIN = fakeOpenclawBinPath;
+    __resetRouterForTests();
+
+    const joined = await requestJson("/join-agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "syncer", joinKey: "ocj_test_1" })
+    });
+
+    const sync = await requestJson("/openclaw/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentId: joined.body.agentId,
+        joinKey: "ocj_test_1",
+        scope: "all"
+      })
+    });
+
+    expect(sync.status).toBe(200);
+    expect(sync.body?.ok).toBe(true);
+    expect(sync.body?.skills?.source).toBe("openclaw-cli");
+    expect(sync.body?.usage?.mode).toBe("openclaw-cli-usage");
+
+    const skills = await requestJson("/openclaw/skills");
+    expect(skills.status).toBe(200);
+    expect(skills.body?.source).toBe("openclaw-cli");
+    expect(skills.body?.degraded).toBe(false);
+    expect(skills.body?.count).toBeGreaterThan(0);
+    expect(typeof skills.body?.syncedAt).toBe("string");
+
+    const usage = await requestJson("/openclaw/usage");
+    expect(usage.status).toBe(200);
+    expect(usage.body?.mode).toBe("openclaw-cli-usage");
+    expect(usage.body?.degraded).toBe(false);
+    expect(usage.body?.summary?.totalTokens).toBe(20);
   });
 
   test("agent-push updates the joined agent state when joinKey matches", async () => {

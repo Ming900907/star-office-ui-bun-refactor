@@ -21,6 +21,7 @@ const OFFICE_URL = (process.env.OFFICE_URL || "http://127.0.0.1:19000").replace(
 const JOIN_KEY = (process.env.JOIN_KEY || "").trim();
 const AGENT_NAME = (process.env.AGENT_NAME || "").trim();
 const PUSH_INTERVAL_SECONDS = Number(process.env.OFFICE_PUSH_INTERVAL_SECONDS || 15);
+const PANEL_SYNC_INTERVAL_SECONDS = Number(process.env.OFFICE_PANEL_SYNC_INTERVAL_SECONDS || 60);
 const STALE_STATE_TTL_SECONDS = Number(process.env.OFFICE_STALE_STATE_TTL || 600);
 const LOCAL_STATE_FILE = process.env.OFFICE_LOCAL_STATE_FILE || path.resolve(process.cwd(), "state.json");
 const CACHE_FILE = path.resolve(process.cwd(), "office-agent-state.json");
@@ -121,6 +122,7 @@ async function ensureJoined(local) {
 }
 
 async function pushLoop(local) {
+  let lastPanelSyncAt = 0;
   while (true) {
     const status = await getLocalState();
     const resp = await api("/agent-push", {
@@ -138,6 +140,21 @@ async function pushLoop(local) {
       console.error(`push failed: status=${resp.status}, body=${resp.text}`);
     } else {
       console.log(`Pushed: ${status.state} - ${status.detail}`);
+    }
+
+    if (PANEL_SYNC_INTERVAL_SECONDS > 0 && (!lastPanelSyncAt || ((Date.now() - lastPanelSyncAt) / 1000) >= PANEL_SYNC_INTERVAL_SECONDS)) {
+      const syncResp = await api("/openclaw/sync", {
+        agentId: local.agentId,
+        joinKey: JOIN_KEY,
+        scope: "all"
+      });
+      if (!syncResp.ok && syncResp.status !== 503) {
+        console.error(`panel sync failed: status=${syncResp.status}, body=${syncResp.text}`);
+      } else {
+        const mode = syncResp.data?.ok ? "ok" : "degraded";
+        console.log(`Panel sync: ${mode}`);
+        lastPanelSyncAt = Date.now();
+      }
     }
 
     await sleep(PUSH_INTERVAL_SECONDS * 1000);

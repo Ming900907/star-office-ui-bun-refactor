@@ -12,6 +12,8 @@ export const PATHS = {
   joinKeysFile: path.resolve(PROJECT_ROOT, "join-keys.json"),
   assetPositionsFile: path.resolve(PROJECT_ROOT, "asset-positions.json"),
   assetDefaultsFile: path.resolve(PROJECT_ROOT, "asset-defaults.json"),
+  openclawSkillsCacheFile: path.resolve(PROJECT_ROOT, "openclaw-skills-cache.json"),
+  openclawUsageCacheFile: path.resolve(PROJECT_ROOT, "openclaw-usage-cache.json"),
   assetsDir: path.resolve(PROJECT_ROOT, "assets"),
   homeFavoritesDir: path.resolve(PROJECT_ROOT, "assets", "home-favorites"),
   homeFavoritesIndexFile: path.resolve(PROJECT_ROOT, "assets", "home-favorites", "index.json"),
@@ -48,6 +50,10 @@ export const FEATURES = {
 
 export function requireHealthyOpenclawSource() {
   return ["1", "true", "yes", "on"].includes((process.env.OPENCLAW_REQUIRE_HEALTHY_SOURCE || "0").toLowerCase());
+}
+
+export function getOpenclawCacheStaleSeconds() {
+  return Number(process.env.OPENCLAW_CACHE_STALE_SECONDS || 120);
 }
 
 export const VALID_AGENT_STATES = new Set(["idle", "writing", "researching", "executing", "syncing", "error"]);

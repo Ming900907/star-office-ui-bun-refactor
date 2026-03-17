@@ -1,4 +1,4 @@
-import { FEATURES, PATHS, SECURITY, SERVER, VALID_AGENT_STATES, requireHealthyOpenclawSource } from "./config";
+import { FEATURES, PATHS, SECURITY, SERVER, VALID_AGENT_STATES, getOpenclawCacheStaleSeconds, requireHealthyOpenclawSource } from "./config";
 import { applyAutoIdle, DEFAULT_AGENTS, normalizeAgentState, readOfficeNameFromIdentity, stateToArea } from "./utils";
 import {
   createDefaultMainState,
@@ -8,17 +8,21 @@ import {
   loadAssetPositions,
   loadHomeFavoritesIndex,
   loadJoinKeys,
+  loadOpenclawSkillsCache,
+  loadOpenclawUsageCache,
   loadState,
   saveAgentsState,
   saveAssetDefaults,
   saveAssetPositions,
   saveHomeFavoritesIndex,
   saveJoinKeys,
+  saveOpenclawSkillsCache,
+  saveOpenclawUsageCache,
   saveState,
   ensureHomeFavoritesIndex
 } from "./storage";
 import { getYesterdayMemo } from "./memo";
-import type { Agent } from "./types";
+import type { Agent, OpenclawSkillsCache, OpenclawUsageCache } from "./types";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -312,8 +316,6 @@ async function ensureJoinKeysFile() {
 
 export function __resetRouterForTests() {
   joinLock = Promise.resolve();
-  skillsCache = null;
-  usageCache = null;
   for (const bucket of Object.keys(rateBuckets)) {
     delete rateBuckets[bucket];
   }
@@ -331,49 +333,8 @@ type AgentSkill = {
   };
 };
 
-type SkillsSourceResult = {
-  source: string;
-  skills: AgentSkill[];
-  note?: string;
-  degraded?: boolean;
-  warnings?: string[];
-};
-
-type UsageOverview = {
-  ok: boolean;
-  mode: string;
-  currency: string;
-  summary: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    estimatedCostUsd: number;
-  };
-  byModel: Array<{
-    model: string;
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    estimatedCostUsd: number;
-  }>;
-  byChannel: Array<{
-    channel: string;
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    estimatedCostUsd: number;
-  }>;
-  costPolicy: {
-    inputCostPer1k: number;
-    outputCostPer1k: number;
-  };
-  note: string;
-  degraded?: boolean;
-  warnings?: string[];
-};
-
-let skillsCache: { expiresAt: number; value: SkillsSourceResult } | null = null;
-let usageCache: { expiresAt: number; value: UsageOverview } | null = null;
+type SkillsSourceResult = OpenclawSkillsCache;
+type UsageOverview = OpenclawUsageCache;
 
 function xmlEscape(text: string) {
   return String(text || "")
@@ -506,7 +467,10 @@ function normalizeUsageFromPayload(payload: any): UsageOverview | null {
     byModel: normalizedModels,
     byChannel: normalizedChannels,
     costPolicy: { inputCostPer1k, outputCostPer1k },
-    note: "来源：openclaw status --usage --json（本机 CLI 实时聚合）"
+    note: "来源：openclaw status --usage --json（本机 CLI 实时聚合）",
+    degraded: false,
+    warnings: [],
+    syncedAt: new Date().toISOString()
   };
 }
 
@@ -588,30 +552,11 @@ function getOpenclawUsageOverview(skills: AgentSkill[]) {
       inputCostPer1k,
       outputCostPer1k
     },
-    note: "当前为估算视图：基于已加载技能的 prompt 开销估算，不是账单实付值"
+    note: "当前为估算视图：基于已加载技能的 prompt 开销估算，不是账单实付值",
+    degraded: true,
+    warnings: [],
+    syncedAt: new Date().toISOString()
   };
-}
-
-async function fetchJsonFromSource(url: string, token?: string, timeoutMs = 6000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const headers: Record<string, string> = {};
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch(url, { headers, signal: controller.signal });
-    const text = await res.text();
-    let data: any = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = null;
-    }
-    return { ok: res.ok, status: res.status, data, text };
-  } catch (error) {
-    return { ok: false, status: 0, data: null, text: String((error as Error)?.message || error) };
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function normalizeSkillsFromPayload(payload: any): AgentSkill[] {
@@ -691,6 +636,54 @@ async function runJsonCommand(commands: string[][], timeoutMs = 6000) {
   return { ok: false, data: null, error: errors.join(" | ") };
 }
 
+function buildSkillsFallbackSnapshot(warnings: string[], note?: string): SkillsSourceResult {
+  const skills = getAgentSkillsCatalog();
+  return {
+    ok: true,
+    source: "local-catalog-fallback",
+    skills,
+    count: skills.length,
+    degraded: true,
+    warnings,
+    note: note || (warnings.length ? `已降级到本地技能目录；${warnings.join("；")}` : "未检测到 OpenClaw CLI 或 CLI 不可用，回退本地技能目录"),
+    syncedAt: new Date().toISOString()
+  };
+}
+
+function buildUsageFallbackSnapshot(skills: AgentSkill[], warnings: string[], note?: string): UsageOverview {
+  const fallback = getOpenclawUsageOverview(skills);
+  fallback.degraded = true;
+  fallback.warnings = warnings;
+  fallback.note = note || (warnings.length ? `已降级到本地估算；${warnings.join("；")}` : fallback.note);
+  fallback.syncedAt = new Date().toISOString();
+  return fallback;
+}
+
+function appendCacheHealth<T extends { degraded: boolean; warnings: string[]; note: string; syncedAt: string }>(payload: T) {
+  const staleSeconds = getOpenclawCacheStaleSeconds();
+  const syncedAtMs = new Date(payload.syncedAt || "").getTime();
+  const ageSeconds = Number.isFinite(syncedAtMs) ? (Date.now() - syncedAtMs) / 1000 : Number.POSITIVE_INFINITY;
+  const isStale = !Number.isFinite(ageSeconds) || ageSeconds > staleSeconds;
+  const warnings = [...(payload.warnings || [])];
+  let note = payload.note || "";
+  let degraded = !!payload.degraded;
+
+  if (isStale) {
+    degraded = true;
+    warnings.push(`cached snapshot is stale (${Math.round(ageSeconds)}s old)`);
+    note = note ? `${note}；缓存已过期` : "缓存已过期";
+  }
+
+  return {
+    ...payload,
+    degraded,
+    warnings,
+    note,
+    stale: isStale,
+    cacheAgeSeconds: Number.isFinite(ageSeconds) ? Math.max(0, Math.round(ageSeconds)) : null
+  };
+}
+
 async function getSkillsFromOpenclawCli(): Promise<SkillsSourceResult | null> {
   const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
   const timeoutMs = Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000);
@@ -721,9 +714,14 @@ async function getSkillsFromOpenclawCli(): Promise<SkillsSourceResult | null> {
   });
 
   return {
+    ok: true,
     source: "openclaw-cli",
     skills,
-    note: "来源：openclaw skills list --json"
+    count: skills.length,
+    degraded: false,
+    warnings: [],
+    note: "来源：openclaw skills list --json",
+    syncedAt: new Date().toISOString()
   };
 }
 
@@ -740,42 +738,10 @@ async function getUsageFromOpenclawCli(): Promise<UsageOverview | null> {
   return normalizeUsageFromPayload(result.data);
 }
 
-async function resolveSkillsSource(): Promise<SkillsSourceResult> {
-  const ttlMs = Number(process.env.OPENCLAW_SKILLS_CACHE_MS || 15_000);
-  const now = Date.now();
-  if (skillsCache && skillsCache.expiresAt > now) return skillsCache.value;
-
-  const warnings: string[] = [];
-  const sourceUrl = String(process.env.OPENCLAW_SKILLS_SOURCE_URL || "").trim();
-  const sourceToken = String(process.env.OPENCLAW_SOURCE_TOKEN || "").trim();
-  if (sourceUrl) {
-    const upstream = await fetchJsonFromSource(sourceUrl, sourceToken);
-    if (upstream.ok) {
-      const value = {
-        source: "configured-upstream",
-        skills: normalizeSkillsFromPayload(upstream.data),
-        note: "来源：OPENCLAW_SKILLS_SOURCE_URL",
-        degraded: false,
-        warnings: []
-      } as SkillsSourceResult;
-      skillsCache = { expiresAt: now + ttlMs, value };
-      return value;
-    }
-    warnings.push(`configured upstream unavailable: ${upstream.status || "network-error"}`);
-  }
-
+async function collectSkillsSnapshot(): Promise<SkillsSourceResult> {
   const cliSkills = await getSkillsFromOpenclawCli();
   if (cliSkills && cliSkills.skills.length) {
-    const value: SkillsSourceResult = {
-      ...cliSkills,
-      degraded: warnings.length > 0,
-      warnings
-    };
-    if (warnings.length > 0) {
-      value.note = `${cliSkills.note}；已从失败的上游降级到本机 CLI`;
-    }
-    skillsCache = { expiresAt: now + ttlMs, value };
-    return value;
+    return cliSkills;
   }
 
   const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
@@ -785,57 +751,13 @@ async function resolveSkillsSource(): Promise<SkillsSourceResult> {
     [openclawBin, "skills", "list", "--eligible", "--json"],
     ["openclaw", "skills", "list", "--eligible", "--json"]
   ], Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000));
-  if (!cliResult.ok && cliResult.error) {
-    warnings.push(`local openclaw cli unavailable: ${cliResult.error}`);
-  }
-
-  const fallback: SkillsSourceResult = {
-    source: "local-catalog-fallback",
-    skills: getAgentSkillsCatalog(),
-    note: warnings.length
-      ? `已降级到本地技能目录；${warnings.join("；")}`
-      : "未检测到 OpenClaw CLI 或 CLI 不可用，回退本地技能目录",
-    degraded: true,
-    warnings
-  };
-  skillsCache = { expiresAt: now + ttlMs, value: fallback };
-  return fallback;
+  const warnings = (!cliResult.ok && cliResult.error) ? [`local openclaw cli unavailable: ${cliResult.error}`] : [];
+  return buildSkillsFallbackSnapshot(warnings);
 }
 
-async function resolveUsageSource(skills: AgentSkill[]): Promise<UsageOverview> {
-  const ttlMs = Number(process.env.OPENCLAW_USAGE_CACHE_MS || 15_000);
-  const now = Date.now();
-  if (usageCache && usageCache.expiresAt > now) return usageCache.value;
-
-  const warnings: string[] = [];
-  const sourceUrl = String(process.env.OPENCLAW_USAGE_SOURCE_URL || "").trim();
-  const sourceToken = String(process.env.OPENCLAW_SOURCE_TOKEN || "").trim();
-  if (sourceUrl) {
-    const upstream = await fetchJsonFromSource(sourceUrl, sourceToken);
-    if (upstream.ok) {
-      const normalized = normalizeUsageFromPayload(upstream.data);
-      if (normalized) {
-        normalized.mode = "configured-upstream";
-        normalized.note = "来源：OPENCLAW_USAGE_SOURCE_URL";
-        normalized.degraded = false;
-        normalized.warnings = [];
-        usageCache = { expiresAt: now + ttlMs, value: normalized };
-        return normalized;
-      }
-      warnings.push("configured upstream returned unusable usage payload");
-    } else {
-      warnings.push(`configured upstream unavailable: ${upstream.status || "network-error"}`);
-    }
-  }
-
+async function collectUsageSnapshot(skills: AgentSkill[]): Promise<UsageOverview> {
   const cliUsage = await getUsageFromOpenclawCli();
   if (cliUsage) {
-    cliUsage.degraded = warnings.length > 0;
-    cliUsage.warnings = warnings;
-    if (warnings.length > 0) {
-      cliUsage.note = `${cliUsage.note}；已从失败的上游降级到本机 CLI`;
-    }
-    usageCache = { expiresAt: now + ttlMs, value: cliUsage };
     return cliUsage;
   }
 
@@ -846,18 +768,67 @@ async function resolveUsageSource(skills: AgentSkill[]): Promise<UsageOverview> 
     [openclawBin, "status", "--json"],
     ["openclaw", "status", "--json"]
   ], Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000));
-  if (!cliResult.ok && cliResult.error) {
-    warnings.push(`local openclaw cli unavailable: ${cliResult.error}`);
+  const warnings = (!cliResult.ok && cliResult.error) ? [`local openclaw cli unavailable: ${cliResult.error}`] : [];
+  return buildUsageFallbackSnapshot(skills, warnings);
+}
+
+async function syncOpenclawSnapshots(scope: "all" | "skills" | "usage") {
+  const syncedAt = new Date().toISOString();
+  const result: {
+    ok: boolean;
+    syncedAt: string;
+    skills?: SkillsSourceResult;
+    usage?: UsageOverview;
+  } = {
+    ok: true,
+    syncedAt
+  };
+
+  let skillsSnapshot: SkillsSourceResult | null = null;
+
+  if (scope === "all" || scope === "skills") {
+    skillsSnapshot = await collectSkillsSnapshot();
+    skillsSnapshot.syncedAt = syncedAt;
+    await saveOpenclawSkillsCache(skillsSnapshot);
+    result.skills = skillsSnapshot;
   }
 
-  const fallback = getOpenclawUsageOverview(skills);
-  fallback.degraded = true;
-  fallback.warnings = warnings;
-  if (warnings.length > 0) {
-    fallback.note = `已降级到本地估算；${warnings.join("；")}`;
+  if (scope === "all" || scope === "usage") {
+    const usageSkills = skillsSnapshot?.skills || (await loadOpenclawSkillsCache())?.skills || getAgentSkillsCatalog();
+    const usageSnapshot = await collectUsageSnapshot(usageSkills as AgentSkill[]);
+    usageSnapshot.syncedAt = syncedAt;
+    await saveOpenclawUsageCache(usageSnapshot);
+    result.usage = usageSnapshot;
   }
-  usageCache = { expiresAt: now + ttlMs, value: fallback };
-  return fallback;
+
+  if ((result.skills && result.skills.degraded) || (result.usage && result.usage.degraded)) {
+    result.ok = false;
+  }
+  return result;
+}
+
+async function readSkillsSnapshot() {
+  const cached = await loadOpenclawSkillsCache();
+  if (!cached) {
+    return appendCacheHealth(buildSkillsFallbackSnapshot(
+      ["no cached skills snapshot; OpenClaw must call POST /openclaw/sync first"],
+      "尚未收到 OpenClaw 推送的 skills 缓存"
+    ));
+  }
+  return appendCacheHealth(cached);
+}
+
+async function readUsageSnapshot() {
+  const cached = await loadOpenclawUsageCache();
+  if (!cached) {
+    const skills = await readSkillsSnapshot();
+    return appendCacheHealth(buildUsageFallbackSnapshot(
+      skills.skills as AgentSkill[],
+      ["no cached usage snapshot; OpenClaw must call POST /openclaw/sync first"],
+      "尚未收到 OpenClaw 推送的 usage 缓存"
+    ));
+  }
+  return appendCacheHealth(cached);
 }
 
 async function executeAgentSkill(skillId: string, input: any) {
@@ -975,11 +946,13 @@ export async function handleRequest(req: Request) {
   }
 
   if (req.method === "GET" && pathName === "/openclaw/skills") {
-    const resolved = await resolveSkillsSource();
+    const resolved = await readSkillsSnapshot();
     if (requireHealthyOpenclawSource() && resolved.degraded) {
       return degradedSourceResponse("skills", {
         source: resolved.source,
         degraded: true,
+        stale: (resolved as any).stale,
+        cacheAgeSeconds: (resolved as any).cacheAgeSeconds,
         warnings: resolved.warnings || [],
         note: resolved.note || "",
         timestamp: new Date().toISOString()
@@ -991,6 +964,9 @@ export async function handleRequest(req: Request) {
       skills: resolved.skills,
       count: resolved.skills.length,
       degraded: !!resolved.degraded,
+      stale: (resolved as any).stale ?? false,
+      cacheAgeSeconds: (resolved as any).cacheAgeSeconds ?? null,
+      syncedAt: resolved.syncedAt || null,
       warnings: resolved.warnings || [],
       note: resolved.note || "",
       timestamp: new Date().toISOString()
@@ -998,12 +974,13 @@ export async function handleRequest(req: Request) {
   }
 
   if (req.method === "GET" && pathName === "/openclaw/usage") {
-    const skillsResolved = await resolveSkillsSource();
-    const usage = await resolveUsageSource(skillsResolved.skills);
+    const usage = await readUsageSnapshot();
     if (requireHealthyOpenclawSource() && usage.degraded) {
       return degradedSourceResponse("usage", {
         mode: usage.mode,
         degraded: true,
+        stale: (usage as any).stale,
+        cacheAgeSeconds: (usage as any).cacheAgeSeconds,
         warnings: usage.warnings || [],
         note: usage.note || "",
         timestamp: new Date().toISOString()
@@ -1011,7 +988,39 @@ export async function handleRequest(req: Request) {
     }
     return jsonResponse({
       ...usage,
+      stale: (usage as any).stale ?? false,
+      cacheAgeSeconds: (usage as any).cacheAgeSeconds ?? null,
+      syncedAt: usage.syncedAt || null,
       timestamp: new Date().toISOString()
+    });
+  }
+
+  if (req.method === "POST" && pathName === "/openclaw/sync") {
+    const data = await readBodyJson(req);
+    if (!data || typeof data !== "object") return jsonResponse({ ok: false, msg: "invalid json" }, 400);
+    const auth = await authenticateSkillCaller(req, data);
+    if (!auth.ok) return auth.response;
+    const scope = String(data.scope || "all").trim().toLowerCase();
+    const normalizedScope = scope === "skills" || scope === "usage" ? scope : "all";
+    const result = await syncOpenclawSnapshots(normalizedScope);
+    if (requireHealthyOpenclawSource() && !result.ok) {
+      return jsonResponse({
+        ok: false,
+        code: "DEGRADED_OPENCLAW_SOURCE",
+        msg: "strict mode 已拒绝写入降级的 OpenClaw 缓存",
+        scope: normalizedScope,
+        strict: true,
+        syncedAt: result.syncedAt,
+        skills: result.skills,
+        usage: result.usage
+      }, 503);
+    }
+    return jsonResponse({
+      ok: result.ok,
+      scope: normalizedScope,
+      syncedAt: result.syncedAt,
+      skills: result.skills,
+      usage: result.usage
     });
   }
 
@@ -1394,7 +1403,7 @@ export async function handleRequest(req: Request) {
     const data = await readBodyJson(req);
     const auth = await authenticateSkillCaller(req, data);
     if (!auth.ok) return auth.response;
-    const resolved = await resolveSkillsSource();
+    const resolved = await readSkillsSnapshot();
     return jsonResponse({
       ok: true,
       skills: resolved.skills,

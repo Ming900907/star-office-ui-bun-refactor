@@ -45,6 +45,39 @@ export type JoinKeysFile = {
   keys: JoinKeyItem[];
 };
 
+export type OpenclawSkillsCache = {
+  ok: boolean;
+  source: string;
+  skills: any[];
+  count: number;
+  degraded: boolean;
+  warnings: string[];
+  note: string;
+  syncedAt: string;
+};
+
+export type OpenclawUsageCache = {
+  ok: boolean;
+  mode: string;
+  currency: string;
+  summary: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    estimatedCostUsd: number;
+  };
+  byModel: Array<Record<string, any>>;
+  byChannel: Array<Record<string, any>>;
+  costPolicy: {
+    inputCostPer1k: number;
+    outputCostPer1k: number;
+  };
+  note: string;
+  degraded: boolean;
+  warnings: string[];
+  syncedAt: string;
+};
+
 export type AssetPosition = {
   x: number;
   y: number;

@@ -7,7 +7,7 @@ A Bun-based backend refactor of **Star Office UI** (pixel-art AI office dashboar
 - Frontend entry (non‑gen): **done**
 - Regression checks: **done (manual)**
 - OpenClaw skills + usage panel: **done**
-- Production source/CLI integration: **done**
+- Production sync/cache integration: **done**
 
 ## Differences vs Upstream
 Upstream project (Flask + Phaser) provides multi-agent status visualization, daily memo, asset customization, desktop pet mode, and optional AI room generation.
@@ -43,6 +43,7 @@ Open: `http://127.0.0.1:19000`
 - Production deploy path is available and validated via `bootstrap:prod`.
 - Legacy status/decorate operations are migrated to `agent-skills` workflow.
 - Main UI now focuses on OpenClaw skills and usage tracking.
+- Skills/usage now use OpenClaw sync -> server cache -> frontend read flow.
 - Remaining work focuses on cleanup/hardening and production monitoring.
 
 ## OpenClaw Auto Bootstrap (Production)
@@ -57,7 +58,7 @@ Behavior:
 - initialize `state.json` / `join-keys.json` with production-safe defaults if missing
 - enforce production-required settings
 - validate `/health`, `/status`, `/openclaw/skills`, `/openclaw/usage`
-- report whether OpenClaw panels are running in `configured-upstream`, `openclaw-cli`, or degraded fallback mode
+- report whether OpenClaw panel cache is healthy or degraded
 - optionally fail bootstrap when degraded panel data is not acceptable (`OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`)
 
 ## Environment
@@ -69,27 +70,26 @@ Behavior:
 - `ENABLE_STATE_CONTROL` (`0` by default; legacy `/set_state`)
 - `ENABLE_ASSET_DECORATION` (`0` by default; legacy `/assets/*`)
 - `ENABLE_AGENT_SKILLS_API` (`1` by default; `/agent-skills/*`)
-- `OPENCLAW_SKILLS_SOURCE_URL` (optional upstream for `/openclaw/skills`)
-- `OPENCLAW_USAGE_SOURCE_URL` (optional upstream for `/openclaw/usage`)
-- `OPENCLAW_SOURCE_TOKEN` (optional bearer token for upstream calls)
-- `OPENCLAW_BIN` (default `openclaw`, used for local CLI fallback)
+- `OPENCLAW_BIN` (default `openclaw`, used when the server executes CLI during sync)
+- `OPENCLAW_CACHE_STALE_SECONDS` (default `120`, panel cache staleness threshold)
 - `OPENCLAW_REQUIRE_HEALTHY_SOURCE` (`0` by default; when `1`, degraded skills/usage are treated as failure)
+- `OFFICE_PANEL_SYNC_INTERVAL_SECONDS` (default `60`, agent-side panel sync interval)
 - See `.env.example` for a full template.
 
 ## Agent Skills API
 - `GET /openclaw/skills` (read-only catalog for UI)
+- `GET /openclaw/usage` (read-only usage snapshot for UI)
+- `POST /openclaw/sync` (OpenClaw/agent triggers CLI sync and refreshes cached panel data)
 - `POST /agent-skills/list`
 - `POST /agent-skills/execute`
 
 Default behavior now disables legacy status/decorate entry points in favor of agent skills.
-`/openclaw/skills` and `/openclaw/usage` resolve by priority:
-1. configured upstream URL (if set)
-2. local OpenClaw CLI (`openclaw skills list --json`, `openclaw status --usage --json`)
-3. local fallback estimation
+`/openclaw/skills` and `/openclaw/usage` now read cached snapshots.
+OpenClaw refreshes those snapshots through `POST /openclaw/sync`, and the server executes local CLI commands during that sync.
 
 Production policy options:
 1. degraded-tolerant: keep `OPENCLAW_REQUIRE_HEALTHY_SOURCE=0` and allow fallback mode
-2. strict: set `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1` and fail bootstrap / panel requests when only degraded data is available
+2. strict: set `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1` and fail bootstrap / panel requests when cached panel data is degraded
 
 ## Security Notes (VPS)
 - In production mode (`STAR_OFFICE_ENV=production`), startup will fail if `ASSET_DRAWER_PASS` is default or `STAR_OFFICE_API_TOKEN` is missing.
@@ -113,6 +113,7 @@ export STAR_OFFICE_API_TOKEN=your_token
 
 ## Agent Push Script (JS)
 Use `frontend/office-agent-push.mjs` for join + periodic push (no Python dependency required).
+It also triggers `POST /openclaw/sync` on an interval so skills/usage caches stay fresh.
 
 ## Data Files
 See `documents/DATA_FILES.md`.

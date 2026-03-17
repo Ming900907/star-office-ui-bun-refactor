@@ -40,14 +40,13 @@ cp .env.example .env
 cp state.sample.json state.json
 cp join-keys.sample.json join-keys.json
 
-# 4) 生产环境务必设置安全项（source 为可选）
+# 4) 生产环境务必设置安全项（OpenClaw 面板走 sync/cache）
 export ASSET_DRAWER_PASS="replace_with_strong_password"
 export STAR_OFFICE_API_TOKEN="replace_with_long_random_token"
 export STAR_OFFICE_ENV=production
-# 可选上游 source（不配置时自动走本机 openclaw CLI）
-# export OPENCLAW_SKILLS_SOURCE_URL="https://your-openclaw-api.example.com/skills"
-# export OPENCLAW_USAGE_SOURCE_URL="https://your-openclaw-api.example.com/usage"
-# export OPENCLAW_SOURCE_TOKEN="your-upstream-bearer-token"
+export OPENCLAW_BIN="openclaw"
+export OPENCLAW_CACHE_STALE_SECONDS=120
+export OFFICE_PANEL_SYNC_INTERVAL_SECONDS=60
 
 # 5) 启动 Bun 服务
 ~/.bun/bin/bun run server/index.ts
@@ -83,13 +82,13 @@ export OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
 ```
 
 5. 验收时不仅看 HTTP 200，还要看：
-   - `/openclaw/skills` 的 `source`
-   - `/openclaw/usage` 的 `mode`
+   - `/openclaw/skills` 与 `/openclaw/usage` 的 `syncedAt`
+   - 是否存在 `stale: true`
    - 是否存在 `degraded: true`
    - `warnings` 是否为空
 
 给主人的一句话总结可以直接说：
-> 我已经按新的部署流程完成初始化，并检查了 skills/usage 当前是 upstream、CLI 还是 fallback 模式。
+> 我已经按新的部署流程完成初始化，并检查了 skills/usage 当前缓存是否已同步、是否过期、是否处于降级模式。
 
 ### 1.1 部署默认策略：由 OpenClaw 自动完成配置（必须执行）
 
@@ -99,14 +98,15 @@ export OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
 2. 自动准备 `state.json`、`join-keys.json`（缺失时以生产安全默认值初始化，不使用 sample）
 3. 若 `STAR_OFFICE_ENV=production`：
    - 强校验 `ASSET_DRAWER_PASS`、`STAR_OFFICE_API_TOKEN`
-   - source URL 可选；未配置时自动走 `openclaw skills list --json` 与 `openclaw status --usage --json`
+   - OpenClaw 通过 `POST /openclaw/sync` 触发服务端执行 `openclaw skills list --json` 与 `openclaw status --usage --json`
    - 若主人要求“必须真实接入 OpenClaw”，则设置 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`
 4. 自动执行最小验收：
    - `GET /health`
    - `GET /status`
+   - `POST /openclaw/sync`
    - `GET /openclaw/skills`
    - `GET /openclaw/usage`
-5. 输出一段“已完成配置摘要”（端口、环境、source/mode、质量、是否 strict）
+5. 输出一段“已完成配置摘要”（端口、环境、syncedAt/stale/degraded、是否 strict）
 
 原则：
 - 能自动推断就自动推断；只在缺少关键密钥时才询问主人。
@@ -117,9 +117,9 @@ export OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
 
 #### A. 健康
 
-- `skills` 来源是 `configured-upstream` 或 `openclaw-cli`
-- `usage` 模式不是本地 fallback
-- `degraded` 为 `false`
+- skills/usage 都已有 `syncedAt`
+- `stale=false`
+- `degraded=false`
 
 这是最理想状态，可以直接告诉主人部署完成。
 
@@ -213,6 +213,7 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=http://127.0.0.1:19000 bu
 - `AGENT_NAME`：展示名
 - `OFFICE_LOCAL_STATE_FILE`：本地状态文件路径（默认 `./state.json`）
 - `OFFICE_PUSH_INTERVAL_SECONDS`：推送间隔（默认 15）
+- `OFFICE_PANEL_SYNC_INTERVAL_SECONDS`：面板同步间隔（默认 60）
 - `OFFICE_STALE_STATE_TTL`：状态超时回 idle（默认 600）
 
 ### 4.3 join key 约定
@@ -245,6 +246,7 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=http://127.0.0.1:19000 bu
 
 - `GET /health`
 - `GET /status`
+- `POST /openclaw/sync`
 - `GET /openclaw/skills`
 - `GET /openclaw/usage`
 - `POST /agent-skills/execute`（`openclaw.set-main-state`）
@@ -255,7 +257,7 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=http://127.0.0.1:19000 bu
 补充判断：
 - 如果 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=0`，允许 fallback，但要明确标注“降级”
 - 如果 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`，则 `/openclaw/skills` 或 `/openclaw/usage` 返回 `503` 也算“正确失败”
-- 不要只看状态码；要同时看 `source`、`mode`、`degraded`、`warnings`
+- 不要只看状态码；要同时看 `syncedAt`、`stale`、`degraded`、`warnings`
 
 ---
 
@@ -277,18 +279,20 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=http://127.0.0.1:19000 bu
 
 ### Q4：生产环境技能/用量从哪里来？
 
-生产环境下按优先级：
-1. 已配置的 `OPENCLAW_SKILLS_SOURCE_URL` / `OPENCLAW_USAGE_SOURCE_URL`
-2. 本机 OpenClaw CLI（`openclaw skills list --json`、`openclaw status --usage --json`）
-3. 本地估算回退
-如需上游鉴权，使用 `OPENCLAW_SOURCE_TOKEN`（Bearer）。如果落到第 3 层，说明当前处于降级模式。若设置 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`，降级会被视为失败。
+生产环境下改为 sync/cache 模式：
+1. OpenClaw 或 agent 调用 `POST /openclaw/sync`
+2. 服务端在同步接口里执行本机 CLI（`openclaw skills list --json`、`openclaw status --usage --json`）
+3. 结果写入本地缓存文件
+4. 前端通过 `GET /openclaw/skills` 与 `GET /openclaw/usage` 读取缓存
+
+如果还没有同步过，或 CLI 同步失败，页面会显示 degraded。若设置 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`，降级会被视为失败。
 
 ### Q5：strict mode 什么时候该开？
 
 只有以下情况建议开启：
 - 主人明确要求“必须是真实 OpenClaw 数据”
 - 这是正式验收环境，不能接受 fallback
-- 需要把 source/CLI 故障直接暴露出来
+- 需要把 sync/CLI 故障直接暴露出来
 
 如果只是为了先把服务跑起来、先恢复页面可用，不要默认开 strict。
 
