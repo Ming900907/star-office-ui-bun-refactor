@@ -66,9 +66,10 @@ Behavior:
 - `ENABLE_STATE_CONTROL` (`0` by default; legacy `/set_state`)
 - `ENABLE_ASSET_DECORATION` (`0` by default; legacy `/assets/*`)
 - `ENABLE_AGENT_SKILLS_API` (`1` by default; `/agent-skills/*`)
-- `OPENCLAW_SKILLS_SOURCE_URL` (production upstream for `/openclaw/skills`)
-- `OPENCLAW_USAGE_SOURCE_URL` (production upstream for `/openclaw/usage`)
+- `OPENCLAW_SKILLS_SOURCE_URL` (optional upstream for `/openclaw/skills`)
+- `OPENCLAW_USAGE_SOURCE_URL` (optional upstream for `/openclaw/usage`)
 - `OPENCLAW_SOURCE_TOKEN` (optional bearer token for upstream calls)
+- `OPENCLAW_BIN` (default `openclaw`, used for local CLI fallback)
 - See `.env.example` for a full template.
 
 ## Agent Skills API
@@ -77,7 +78,10 @@ Behavior:
 - `POST /agent-skills/execute`
 
 Default behavior now disables legacy status/decorate entry points in favor of agent skills.
-In `production`, `/openclaw/skills` and `/openclaw/usage` fetch from configured upstream source URLs.
+`/openclaw/skills` and `/openclaw/usage` resolve by priority:
+1. configured upstream URL (if set)
+2. local OpenClaw CLI (`openclaw skills list --json`, `openclaw status --usage --json`)
+3. local fallback estimation
 
 ## Security Notes (VPS)
 - In production mode (`STAR_OFFICE_ENV=production`), startup will fail if `ASSET_DRAWER_PASS` is default or `STAR_OFFICE_API_TOKEN` is missing.

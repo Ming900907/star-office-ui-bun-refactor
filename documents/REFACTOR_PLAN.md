@@ -8,7 +8,7 @@
 ## 范围
 - 后端服务（Bun）与 Web 前端联调
 - 前端改造为 OpenClaw 技能 + 用量追踪入口
-- 生产环境接入 OpenClaw 上游 source（skills/usage）
+- 生产环境支持 OpenClaw 数据源多模式（upstream URL 或本机 CLI）
 
 ## 不做
 - 不实现生图
@@ -28,7 +28,7 @@
 - 存储：state/agents/join-keys/asset-positions/defaults
 - API：/status /agents /join-agent /agent-push /yesterday-memo /openclaw/skills /openclaw/usage /agent-skills/*
 - 数据初始化：区分 sample 文件与生产文件，避免回退 sample 造成误接入
-- 生产源接入：`OPENCLAW_SKILLS_SOURCE_URL`、`OPENCLAW_USAGE_SOURCE_URL`
+- 数据源接入：优先 `OPENCLAW_*_SOURCE_URL`，未配置时走本机 CLI
 - 回归：主页面、技能面板、用量面板、多 Agent 状态链路
 
 ## 风险

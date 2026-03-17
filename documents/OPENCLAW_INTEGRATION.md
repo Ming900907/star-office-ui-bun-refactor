@@ -18,13 +18,13 @@
 该命令会自动完成：
 - `.env` 创建与生产字段校验
 - `state.json` / `join-keys.json` 初始化
-- 生产 source URL 配置检查
+- OpenClaw source/CLI 可用性校验
 - `/health`、`/status`、`/openclaw/skills`、`/openclaw/usage` 验收
 
 ## 方案 A：同机（OpenClaw 与 Office 同 VPS）
 1. 启动 Bun 后端（systemd）
 2. 反代 `/` 到 Bun
-3. OpenClaw 通过 source API 提供技能与用量数据
+3. OpenClaw 通过本机 CLI（或可选 source API）提供技能与用量数据
 4. Office 通过 `/openclaw/skills` 与 `/openclaw/usage` 展示
 
 ### systemd 示例
@@ -41,9 +41,11 @@ Environment=PORT=19000
 Environment=HOST=127.0.0.1
 Environment=ASSET_DRAWER_PASS=your-strong-pass
 Environment=STAR_OFFICE_ENV=production
-Environment=OPENCLAW_SKILLS_SOURCE_URL=https://your-openclaw-api.example.com/skills
-Environment=OPENCLAW_USAGE_SOURCE_URL=https://your-openclaw-api.example.com/usage
-Environment=OPENCLAW_SOURCE_TOKEN=your-upstream-bearer-token
+Environment=OPENCLAW_BIN=openclaw
+# Optional upstream:
+# Environment=OPENCLAW_SKILLS_SOURCE_URL=https://your-openclaw-api.example.com/skills
+# Environment=OPENCLAW_USAGE_SOURCE_URL=https://your-openclaw-api.example.com/usage
+# Environment=OPENCLAW_SOURCE_TOKEN=your-upstream-bearer-token
 ExecStart=/root/.bun/bin/bun run server/index.ts
 Restart=always
 RestartSec=3
@@ -87,12 +89,13 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=https://office.example.co
 - `AGENT_NAME`：展示名
 - `OFFICE_LOCAL_STATE_FILE`：OpenClaw `state.json` 路径
 - `OFFICE_STALE_STATE_TTL`：状态过期回 idle（秒）
-- `OPENCLAW_SKILLS_SOURCE_URL`：Office 技能面板上游
-- `OPENCLAW_USAGE_SOURCE_URL`：Office 用量面板上游
+- `OPENCLAW_BIN`：OpenClaw 可执行文件名或路径（默认 `openclaw`）
+- `OPENCLAW_SKILLS_SOURCE_URL`：Office 技能面板上游（可选）
+- `OPENCLAW_USAGE_SOURCE_URL`：Office 用量面板上游（可选）
 - `OPENCLAW_SOURCE_TOKEN`：上游鉴权 token（可选）
 
 ## 最小验证
 - `GET /health` / `GET /status`
-- `GET /openclaw/skills` / `GET /openclaw/usage`（生产环境应返回 `source=production-upstream`）
+- `GET /openclaw/skills` / `GET /openclaw/usage`（应返回可用 source，不再强制 upstream）
 - `POST /join-agent` → `POST /agent-push`
 - 页面能看到状态变化

@@ -12,7 +12,7 @@ Star-Office-UI Bun 后端重构
 - 前端改动最小化
 - 数据文件格式兼容
 - API 路径与响应尽量一致
-- 生产环境 skills/usage 必须由上游 source 提供
+- 生产环境 skills/usage 优先上游 source，未配置时自动走本机 OpenClaw CLI
 
 ## 非目标
 - 不实现生图

@@ -105,18 +105,6 @@ fi
 
 read_env_file
 
-if [[ -z "${OPENCLAW_SKILLS_SOURCE_URL:-}" ]]; then
-  echo "❌ Missing OPENCLAW_SKILLS_SOURCE_URL in .env"
-  echo "   Set OPENCLAW_SKILLS_SOURCE_URL or OPENCLAW_API_BASE_URL before retry."
-  exit 1
-fi
-
-if [[ -z "${OPENCLAW_USAGE_SOURCE_URL:-}" ]]; then
-  echo "❌ Missing OPENCLAW_USAGE_SOURCE_URL in .env"
-  echo "   Set OPENCLAW_USAGE_SOURCE_URL or OPENCLAW_API_BASE_URL before retry."
-  exit 1
-fi
-
 echo "== Installing dependencies =="
 "$BUN_BIN" install >/dev/null
 
@@ -164,12 +152,14 @@ check_endpoint "/openclaw/skills"
 check_endpoint "/openclaw/usage"
 
 short_token="${STAR_OFFICE_API_TOKEN:0:6}***"
+skills_source_label="${OPENCLAW_SKILLS_SOURCE_URL:-openclaw-cli-or-local-fallback}"
+usage_source_label="${OPENCLAW_USAGE_SOURCE_URL:-openclaw-cli-or-local-fallback}"
 echo ""
 echo "==== OpenClaw bootstrap summary ===="
 echo "env: production"
 echo "host: ${HOST_VAL}"
 echo "port: ${PORT_VAL}"
-echo "skills source: ${OPENCLAW_SKILLS_SOURCE_URL}"
-echo "usage source: ${OPENCLAW_USAGE_SOURCE_URL}"
+echo "skills source: ${skills_source_label}"
+echo "usage source: ${usage_source_label}"
 echo "api token: ${short_token}"
 echo "ready: yes"

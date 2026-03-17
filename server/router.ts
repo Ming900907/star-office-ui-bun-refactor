@@ -311,6 +311,181 @@ type AgentSkill = {
   };
 };
 
+type SkillsSourceResult = {
+  source: string;
+  skills: AgentSkill[];
+  note?: string;
+};
+
+type UsageOverview = {
+  ok: boolean;
+  mode: string;
+  currency: string;
+  summary: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    estimatedCostUsd: number;
+  };
+  byModel: Array<{
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    estimatedCostUsd: number;
+  }>;
+  byChannel: Array<{
+    channel: string;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    estimatedCostUsd: number;
+  }>;
+  costPolicy: {
+    inputCostPer1k: number;
+    outputCostPer1k: number;
+  };
+  note: string;
+};
+
+let skillsCache: { expiresAt: number; value: SkillsSourceResult } | null = null;
+let usageCache: { expiresAt: number; value: UsageOverview } | null = null;
+
+function xmlEscape(text: string) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function readNumber(obj: any, keys: string[]) {
+  for (const key of keys) {
+    const v = Number(obj?.[key]);
+    if (Number.isFinite(v)) return v;
+  }
+  return 0;
+}
+
+function summarizeUsageRows(rows: Array<{ key: string; inputTokens: number; outputTokens: number; totalTokens: number; estimatedCostUsd: number }>) {
+  const map = new Map<string, { key: string; inputTokens: number; outputTokens: number; totalTokens: number; estimatedCostUsd: number }>();
+  for (const row of rows) {
+    const key = row.key || "unknown";
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, { ...row, key });
+      continue;
+    }
+    prev.inputTokens += row.inputTokens;
+    prev.outputTokens += row.outputTokens;
+    prev.totalTokens += row.totalTokens;
+    prev.estimatedCostUsd += row.estimatedCostUsd;
+  }
+  return Array.from(map.values());
+}
+
+function normalizeUsageFromPayload(payload: any): UsageOverview | null {
+  if (!payload || typeof payload !== "object") return null;
+
+  const src = (payload?.usage && typeof payload.usage === "object") ? payload.usage : payload;
+  const inputCostPer1k = Number(process.env.OPENCLAW_INPUT_COST_PER_1K || 0.002);
+  const outputCostPer1k = Number(process.env.OPENCLAW_OUTPUT_COST_PER_1K || 0.008);
+
+  const modelCandidates =
+    (Array.isArray(src?.byModel) && src.byModel)
+    || (Array.isArray(src?.by_model) && src.by_model)
+    || (Array.isArray(src?.models) && src.models)
+    || (Array.isArray(src?.providers) && src.providers)
+    || (Array.isArray(src?.usageByModel) && src.usageByModel)
+    || [];
+
+  const channelCandidates =
+    (Array.isArray(src?.byChannel) && src.byChannel)
+    || (Array.isArray(src?.by_channel) && src.by_channel)
+    || (Array.isArray(src?.channels) && src.channels)
+    || (Array.isArray(src?.usageByChannel) && src.usageByChannel)
+    || [];
+
+  const normalizedModels = summarizeUsageRows(
+    modelCandidates.map((it: any) => {
+      const inputTokens = readNumber(it, ["inputTokens", "input_tokens", "promptTokens", "prompt_tokens"]);
+      const outputTokens = readNumber(it, ["outputTokens", "output_tokens", "completionTokens", "completion_tokens"]);
+      const totalTokensRaw = readNumber(it, ["totalTokens", "total_tokens"]);
+      const totalTokens = totalTokensRaw > 0 ? totalTokensRaw : inputTokens + outputTokens;
+      const estimatedCostUsdRaw = readNumber(it, ["estimatedCostUsd", "estimated_cost_usd", "costUsd", "cost_usd", "usd", "cost"]);
+      const estimatedCostUsd = estimatedCostUsdRaw > 0
+        ? estimatedCostUsdRaw
+        : (inputTokens / 1000) * inputCostPer1k + (outputTokens / 1000) * outputCostPer1k;
+      const key = String(it?.model || it?.modelName || it?.provider || it?.name || "unknown");
+      return { key, inputTokens, outputTokens, totalTokens, estimatedCostUsd };
+    })
+  ).map((it) => ({
+    model: it.key,
+    inputTokens: it.inputTokens,
+    outputTokens: it.outputTokens,
+    totalTokens: it.totalTokens,
+    estimatedCostUsd: Number(it.estimatedCostUsd.toFixed(6))
+  }));
+
+  const normalizedChannels = summarizeUsageRows(
+    channelCandidates.map((it: any) => {
+      const inputTokens = readNumber(it, ["inputTokens", "input_tokens", "promptTokens", "prompt_tokens"]);
+      const outputTokens = readNumber(it, ["outputTokens", "output_tokens", "completionTokens", "completion_tokens"]);
+      const totalTokensRaw = readNumber(it, ["totalTokens", "total_tokens"]);
+      const totalTokens = totalTokensRaw > 0 ? totalTokensRaw : inputTokens + outputTokens;
+      const estimatedCostUsdRaw = readNumber(it, ["estimatedCostUsd", "estimated_cost_usd", "costUsd", "cost_usd", "usd", "cost"]);
+      const estimatedCostUsd = estimatedCostUsdRaw > 0
+        ? estimatedCostUsdRaw
+        : (inputTokens / 1000) * inputCostPer1k + (outputTokens / 1000) * outputCostPer1k;
+      const key = String(it?.channel || it?.source || it?.provider || it?.name || "openclaw");
+      return { key, inputTokens, outputTokens, totalTokens, estimatedCostUsd };
+    })
+  ).map((it) => ({
+    channel: it.key,
+    inputTokens: it.inputTokens,
+    outputTokens: it.outputTokens,
+    totalTokens: it.totalTokens,
+    estimatedCostUsd: Number(it.estimatedCostUsd.toFixed(6))
+  }));
+
+  const summaryObj = (src?.summary && typeof src.summary === "object") ? src.summary : src;
+  const summaryInput = readNumber(summaryObj, ["inputTokens", "input_tokens", "promptTokens", "prompt_tokens"]);
+  const summaryOutput = readNumber(summaryObj, ["outputTokens", "output_tokens", "completionTokens", "completion_tokens"]);
+  const summaryTotalRaw = readNumber(summaryObj, ["totalTokens", "total_tokens"]);
+  const summaryCostRaw = readNumber(summaryObj, ["estimatedCostUsd", "estimated_cost_usd", "costUsd", "cost_usd", "usd", "cost"]);
+
+  const modelInput = normalizedModels.reduce((sum, it) => sum + it.inputTokens, 0);
+  const modelOutput = normalizedModels.reduce((sum, it) => sum + it.outputTokens, 0);
+  const modelTotal = normalizedModels.reduce((sum, it) => sum + it.totalTokens, 0);
+  const modelCost = normalizedModels.reduce((sum, it) => sum + it.estimatedCostUsd, 0);
+
+  const inputTokens = summaryInput > 0 ? summaryInput : modelInput;
+  const outputTokens = summaryOutput > 0 ? summaryOutput : modelOutput;
+  const totalTokens = summaryTotalRaw > 0 ? summaryTotalRaw : (modelTotal > 0 ? modelTotal : inputTokens + outputTokens);
+  const estimatedCostUsd = summaryCostRaw > 0
+    ? summaryCostRaw
+    : (modelCost > 0 ? modelCost : (inputTokens / 1000) * inputCostPer1k + (outputTokens / 1000) * outputCostPer1k);
+
+  if (totalTokens <= 0 && normalizedModels.length === 0 && normalizedChannels.length === 0) return null;
+
+  return {
+    ok: true,
+    mode: "openclaw-cli-usage",
+    currency: String(src?.currency || "USD"),
+    summary: {
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      estimatedCostUsd: Number(estimatedCostUsd.toFixed(6))
+    },
+    byModel: normalizedModels,
+    byChannel: normalizedChannels,
+    costPolicy: { inputCostPer1k, outputCostPer1k },
+    note: "来源：openclaw status --usage --json（本机 CLI 实时聚合）"
+  };
+}
+
 function getAgentSkillsCatalog(): AgentSkill[] {
   return [
     {
@@ -349,8 +524,7 @@ function getAgentSkillsCatalog(): AgentSkill[] {
   ];
 }
 
-function getOpenclawUsageOverview() {
-  const skills = getAgentSkillsCatalog();
+function getOpenclawUsageOverview(skills: AgentSkill[]) {
   const totalInputTokens = skills.reduce((sum, s) => sum + Number(s.tokenCost?.estimatedInputTokens || 0), 0);
   const totalOutputTokens = skills.reduce((sum, s) => sum + Number(s.tokenCost?.estimatedOutputTokens || 0), 0);
   const totalTokens = totalInputTokens + totalOutputTokens;
@@ -390,7 +564,7 @@ function getOpenclawUsageOverview() {
       inputCostPer1k,
       outputCostPer1k
     },
-    note: "当前为估算视图：基于技能 token 配置计算，不是实时计费账单"
+    note: "当前为估算视图：基于已加载技能的 prompt 开销估算，不是账单实付值"
   };
 }
 
@@ -451,6 +625,151 @@ function normalizeSkillsFromPayload(payload: any): AgentSkill[] {
     .filter(Boolean) as AgentSkill[];
 
   return normalized.length ? normalized : fallback;
+}
+
+async function runJsonCommand(commands: string[][], timeoutMs = 6000) {
+  for (const command of commands) {
+    try {
+      const proc = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
+      const timeout = setTimeout(() => {
+        try {
+          proc.kill();
+        } catch {
+          // ignore
+        }
+      }, timeoutMs);
+      const code = await proc.exited;
+      clearTimeout(timeout);
+      if (code !== 0) continue;
+      const stdout = await new Response(proc.stdout).text();
+      const text = String(stdout || "").trim();
+      if (!text) continue;
+      try {
+        const data = JSON.parse(text);
+        return { ok: true, data };
+      } catch {
+        continue;
+      }
+    } catch {
+      // try next command
+    }
+  }
+  return { ok: false, data: null };
+}
+
+async function getSkillsFromOpenclawCli(): Promise<SkillsSourceResult | null> {
+  const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
+  const timeoutMs = Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000);
+  const result = await runJsonCommand([
+    [openclawBin, "skills", "list", "--json"],
+    ["openclaw", "skills", "list", "--json"],
+    [openclawBin, "skills", "list", "--eligible", "--json"],
+    ["openclaw", "skills", "list", "--eligible", "--json"]
+  ], timeoutMs);
+  if (!result.ok) return null;
+
+  const rawSkills = normalizeSkillsFromPayload(result.data);
+  const skills = rawSkills.map((it) => {
+    const location = String((it as any)?.location || "");
+    const escapedNameLen = xmlEscape(it.name || it.id).length;
+    const escapedDescLen = xmlEscape(it.description || "").length;
+    const escapedLocLen = xmlEscape(location || it.id).length;
+    const chars = 97 + escapedNameLen + escapedDescLen + escapedLocLen;
+    const promptTokensApprox = Math.max(1, Math.round(chars / 4));
+    return {
+      ...it,
+      tokenCost: {
+        estimatedInputTokens: promptTokensApprox,
+        estimatedOutputTokens: 0,
+        note: "基于 OpenClaw docs 的技能注入字符公式估算（约 4 chars/token）"
+      }
+    };
+  });
+
+  return {
+    source: "openclaw-cli",
+    skills,
+    note: "来源：openclaw skills list --json"
+  };
+}
+
+async function getUsageFromOpenclawCli(): Promise<UsageOverview | null> {
+  const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
+  const timeoutMs = Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000);
+  const result = await runJsonCommand([
+    [openclawBin, "status", "--usage", "--json"],
+    ["openclaw", "status", "--usage", "--json"],
+    [openclawBin, "status", "--json"],
+    ["openclaw", "status", "--json"]
+  ], timeoutMs);
+  if (!result.ok) return null;
+  return normalizeUsageFromPayload(result.data);
+}
+
+async function resolveSkillsSource(): Promise<SkillsSourceResult> {
+  const ttlMs = Number(process.env.OPENCLAW_SKILLS_CACHE_MS || 15_000);
+  const now = Date.now();
+  if (skillsCache && skillsCache.expiresAt > now) return skillsCache.value;
+
+  const sourceUrl = String(process.env.OPENCLAW_SKILLS_SOURCE_URL || "").trim();
+  const sourceToken = String(process.env.OPENCLAW_SOURCE_TOKEN || "").trim();
+  if (sourceUrl) {
+    const upstream = await fetchJsonFromSource(sourceUrl, sourceToken);
+    if (upstream.ok) {
+      const value = {
+        source: "configured-upstream",
+        skills: normalizeSkillsFromPayload(upstream.data),
+        note: "来源：OPENCLAW_SKILLS_SOURCE_URL"
+      } as SkillsSourceResult;
+      skillsCache = { expiresAt: now + ttlMs, value };
+      return value;
+    }
+  }
+
+  const cliSkills = await getSkillsFromOpenclawCli();
+  if (cliSkills && cliSkills.skills.length) {
+    skillsCache = { expiresAt: now + ttlMs, value: cliSkills };
+    return cliSkills;
+  }
+
+  const fallback: SkillsSourceResult = {
+    source: "local-catalog-fallback",
+    skills: getAgentSkillsCatalog(),
+    note: "未检测到 OpenClaw CLI 或 CLI 不可用，回退本地技能目录"
+  };
+  skillsCache = { expiresAt: now + ttlMs, value: fallback };
+  return fallback;
+}
+
+async function resolveUsageSource(skills: AgentSkill[]): Promise<UsageOverview> {
+  const ttlMs = Number(process.env.OPENCLAW_USAGE_CACHE_MS || 15_000);
+  const now = Date.now();
+  if (usageCache && usageCache.expiresAt > now) return usageCache.value;
+
+  const sourceUrl = String(process.env.OPENCLAW_USAGE_SOURCE_URL || "").trim();
+  const sourceToken = String(process.env.OPENCLAW_SOURCE_TOKEN || "").trim();
+  if (sourceUrl) {
+    const upstream = await fetchJsonFromSource(sourceUrl, sourceToken);
+    if (upstream.ok) {
+      const normalized = normalizeUsageFromPayload(upstream.data);
+      if (normalized) {
+        normalized.mode = "configured-upstream";
+        normalized.note = "来源：OPENCLAW_USAGE_SOURCE_URL";
+        usageCache = { expiresAt: now + ttlMs, value: normalized };
+        return normalized;
+      }
+    }
+  }
+
+  const cliUsage = await getUsageFromOpenclawCli();
+  if (cliUsage) {
+    usageCache = { expiresAt: now + ttlMs, value: cliUsage };
+    return cliUsage;
+  }
+
+  const fallback = getOpenclawUsageOverview(skills);
+  usageCache = { expiresAt: now + ttlMs, value: fallback };
+  return fallback;
 }
 
 async function executeAgentSkill(skillId: string, input: any) {
@@ -568,66 +887,22 @@ export async function handleRequest(req: Request) {
   }
 
   if (req.method === "GET" && pathName === "/openclaw/skills") {
-    if (SECURITY.isProduction) {
-      const sourceUrl = String(process.env.OPENCLAW_SKILLS_SOURCE_URL || "").trim();
-      const sourceToken = String(process.env.OPENCLAW_SOURCE_TOKEN || "").trim();
-      if (!sourceUrl) {
-        return jsonResponse({ ok: false, msg: "OPENCLAW_SKILLS_SOURCE_URL is required in production" }, 503);
-      }
-      const upstream = await fetchJsonFromSource(sourceUrl, sourceToken);
-      if (!upstream.ok) {
-        return jsonResponse({
-          ok: false,
-          msg: "failed to fetch production skills source",
-          upstreamStatus: upstream.status
-        }, 502);
-      }
-      const skills = normalizeSkillsFromPayload(upstream.data);
-      return jsonResponse({
-        ok: true,
-        source: "production-upstream",
-        skills,
-        count: skills.length,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const skills = getAgentSkillsCatalog();
+    const resolved = await resolveSkillsSource();
     return jsonResponse({
       ok: true,
-      source: "local-catalog",
-      skills,
-      count: skills.length,
+      source: resolved.source,
+      skills: resolved.skills,
+      count: resolved.skills.length,
+      note: resolved.note || "",
       timestamp: new Date().toISOString()
     });
   }
 
   if (req.method === "GET" && pathName === "/openclaw/usage") {
-    if (SECURITY.isProduction) {
-      const sourceUrl = String(process.env.OPENCLAW_USAGE_SOURCE_URL || "").trim();
-      const sourceToken = String(process.env.OPENCLAW_SOURCE_TOKEN || "").trim();
-      if (!sourceUrl) {
-        return jsonResponse({ ok: false, msg: "OPENCLAW_USAGE_SOURCE_URL is required in production" }, 503);
-      }
-      const upstream = await fetchJsonFromSource(sourceUrl, sourceToken);
-      if (!upstream.ok || !upstream.data || typeof upstream.data !== "object") {
-        return jsonResponse({
-          ok: false,
-          msg: "failed to fetch production usage source",
-          upstreamStatus: upstream.status
-        }, 502);
-      }
-      return jsonResponse({
-        ...upstream.data,
-        ok: true,
-        source: "production-upstream",
-        timestamp: new Date().toISOString()
-      });
-    }
-
+    const skillsResolved = await resolveSkillsSource();
+    const usage = await resolveUsageSource(skillsResolved.skills);
     return jsonResponse({
-      ...getOpenclawUsageOverview(),
-      source: "local-estimated",
+      ...usage,
       timestamp: new Date().toISOString()
     });
   }

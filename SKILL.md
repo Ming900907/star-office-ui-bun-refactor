@@ -39,13 +39,14 @@ cp .env.example .env
 cp state.sample.json state.json
 cp join-keys.sample.json join-keys.json
 
-# 4) 生产环境务必设置安全项与上游 source（本地体验可跳过）
+# 4) 生产环境务必设置安全项（source 为可选）
 export ASSET_DRAWER_PASS="replace_with_strong_password"
 export STAR_OFFICE_API_TOKEN="replace_with_long_random_token"
 export STAR_OFFICE_ENV=production
-export OPENCLAW_SKILLS_SOURCE_URL="https://your-openclaw-api.example.com/skills"
-export OPENCLAW_USAGE_SOURCE_URL="https://your-openclaw-api.example.com/usage"
-export OPENCLAW_SOURCE_TOKEN="your-upstream-bearer-token"
+# 可选上游 source（不配置时自动走本机 openclaw CLI）
+# export OPENCLAW_SKILLS_SOURCE_URL="https://your-openclaw-api.example.com/skills"
+# export OPENCLAW_USAGE_SOURCE_URL="https://your-openclaw-api.example.com/usage"
+# export OPENCLAW_SOURCE_TOKEN="your-upstream-bearer-token"
 
 # 5) 启动 Bun 服务
 ~/.bun/bin/bun run server/index.ts
@@ -70,7 +71,7 @@ export OPENCLAW_SOURCE_TOKEN="your-upstream-bearer-token"
 2. 自动准备 `state.json`、`join-keys.json`（缺失时初始化）
 3. 若 `STAR_OFFICE_ENV=production`：
    - 强校验 `ASSET_DRAWER_PASS`、`STAR_OFFICE_API_TOKEN`
-   - 强校验 `OPENCLAW_SKILLS_SOURCE_URL`、`OPENCLAW_USAGE_SOURCE_URL`
+   - source URL 可选；未配置时自动走 `openclaw skills list --json` 与 `openclaw status --usage --json`
 4. 自动执行最小验收：
    - `GET /health`
    - `GET /status`
@@ -79,7 +80,7 @@ export OPENCLAW_SOURCE_TOKEN="your-upstream-bearer-token"
 5. 输出一段“已完成配置摘要”（端口、环境、source 来源）
 
 原则：
-- 能自动推断就自动推断；只在缺少关键密钥/URL 时才询问主人。
+- 能自动推断就自动推断；只在缺少关键密钥时才询问主人。
 - 不把“请你手动改配置文件”作为默认方案。
 
 ---
@@ -215,10 +216,11 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=http://127.0.0.1:19000 bu
 
 ### Q4：生产环境技能/用量从哪里来？
 
-生产环境下：
-- `/openclaw/skills` 来自 `OPENCLAW_SKILLS_SOURCE_URL`
-- `/openclaw/usage` 来自 `OPENCLAW_USAGE_SOURCE_URL`
-- 如需鉴权，使用 `OPENCLAW_SOURCE_TOKEN`（Bearer）
+生产环境下按优先级：
+1. 已配置的 `OPENCLAW_SKILLS_SOURCE_URL` / `OPENCLAW_USAGE_SOURCE_URL`
+2. 本机 OpenClaw CLI（`openclaw skills list --json`、`openclaw status --usage --json`）
+3. 本地估算回退
+如需上游鉴权，使用 `OPENCLAW_SOURCE_TOKEN`（Bearer）。
 
 ---
 
