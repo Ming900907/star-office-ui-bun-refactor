@@ -36,6 +36,7 @@ cd star-office-ui-bun-refactor
 
 # 3) 初始化配置与状态文件
 cp .env.example .env
+# 本地体验可从 sample 初始化；生产部署请优先使用 bootstrap:prod
 cp state.sample.json state.json
 cp join-keys.sample.json join-keys.json
 
@@ -63,25 +64,80 @@ export STAR_OFFICE_ENV=production
 
 该命令会由 OpenClaw 自动完成配置与最小验收，不需要主人手动逐项编辑。
 
+### 1.0 生产部署时，OpenClaw 的默认执行策略
+
+如果主人说的是“部署到服务器 / 重新部署 / 上线新版本”，默认按下面策略执行，不要退回到旧的手工模式：
+
+1. 优先执行 `~/.bun/bin/bun run bootstrap:prod`
+2. 默认使用 `degraded-tolerant` 策略
+3. 只有主人明确要求“不能接受 fallback / 必须真实连上 OpenClaw / 降级也算失败”时，才设置：
+
+```bash
+export OPENCLAW_REQUIRE_HEALTHY_SOURCE=1
+```
+
+4. 如果主人没有特别要求 strict，就保持：
+
+```bash
+export OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
+```
+
+5. 验收时不仅看 HTTP 200，还要看：
+   - `/openclaw/skills` 的 `source`
+   - `/openclaw/usage` 的 `mode`
+   - 是否存在 `degraded: true`
+   - `warnings` 是否为空
+
+给主人的一句话总结可以直接说：
+> 我已经按新的部署流程完成初始化，并检查了 skills/usage 当前是 upstream、CLI 还是 fallback 模式。
+
 ### 1.1 部署默认策略：由 OpenClaw 自动完成配置（必须执行）
 
 部署时，Agent 默认按以下顺序自动执行，不要把配置步骤丢给主人手工做：
 
 1. 自动创建/更新 `.env`
-2. 自动准备 `state.json`、`join-keys.json`（缺失时初始化）
+2. 自动准备 `state.json`、`join-keys.json`（缺失时以生产安全默认值初始化，不使用 sample）
 3. 若 `STAR_OFFICE_ENV=production`：
    - 强校验 `ASSET_DRAWER_PASS`、`STAR_OFFICE_API_TOKEN`
    - source URL 可选；未配置时自动走 `openclaw skills list --json` 与 `openclaw status --usage --json`
+   - 若主人要求“必须真实接入 OpenClaw”，则设置 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`
 4. 自动执行最小验收：
    - `GET /health`
    - `GET /status`
    - `GET /openclaw/skills`
    - `GET /openclaw/usage`
-5. 输出一段“已完成配置摘要”（端口、环境、source 来源）
+5. 输出一段“已完成配置摘要”（端口、环境、source/mode、质量、是否 strict）
 
 原则：
 - 能自动推断就自动推断；只在缺少关键密钥时才询问主人。
 - 不把“请你手动改配置文件”作为默认方案。
+- 主人没特别强调“禁止降级”时，默认使用 degraded-tolerant 模式；只有明确要求时才开 strict。
+
+### 1.2 部署时必须识别的三种结果
+
+#### A. 健康
+
+- `skills` 来源是 `configured-upstream` 或 `openclaw-cli`
+- `usage` 模式不是本地 fallback
+- `degraded` 为 `false`
+
+这是最理想状态，可以直接告诉主人部署完成。
+
+#### B. 可运行但降级
+
+- `source` 含 `fallback`
+- 或 `mode=estimated`
+- 或返回体里有 `degraded: true`
+
+如果主人没有要求 strict，这种状态可以上线，但必须明确告诉主人当前不是“真实 OpenClaw 数据源”。
+
+#### C. 严格模式失败
+
+- 设置了 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`
+- 且 skills/usage 仍是 degraded
+
+这时不要说“部署完成”，应该明确告诉主人：
+> 服务已经拉起，但 strict mode 下 OpenClaw 数据源不健康，本次部署验收失败。
 
 ---
 
@@ -196,6 +252,11 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=http://127.0.0.1:19000 bu
 - `POST /join-agent` + `POST /agent-push`
 - 页面技能面板与用量追踪面板可正常加载
 
+补充判断：
+- 如果 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=0`，允许 fallback，但要明确标注“降级”
+- 如果 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`，则 `/openclaw/skills` 或 `/openclaw/usage` 返回 `503` 也算“正确失败”
+- 不要只看状态码；要同时看 `source`、`mode`、`degraded`、`warnings`
+
 ---
 
 ## 7. 常见问题（你要会答）
@@ -220,7 +281,16 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=http://127.0.0.1:19000 bu
 1. 已配置的 `OPENCLAW_SKILLS_SOURCE_URL` / `OPENCLAW_USAGE_SOURCE_URL`
 2. 本机 OpenClaw CLI（`openclaw skills list --json`、`openclaw status --usage --json`）
 3. 本地估算回退
-如需上游鉴权，使用 `OPENCLAW_SOURCE_TOKEN`（Bearer）。
+如需上游鉴权，使用 `OPENCLAW_SOURCE_TOKEN`（Bearer）。如果落到第 3 层，说明当前处于降级模式。若设置 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`，降级会被视为失败。
+
+### Q5：strict mode 什么时候该开？
+
+只有以下情况建议开启：
+- 主人明确要求“必须是真实 OpenClaw 数据”
+- 这是正式验收环境，不能接受 fallback
+- 需要把 source/CLI 故障直接暴露出来
+
+如果只是为了先把服务跑起来、先恢复页面可用，不要默认开 strict。
 
 ---
 

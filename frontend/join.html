@@ -129,6 +129,27 @@
         const statusDiv = document.getElementById('status');
         const agentNameInput = document.getElementById('agentName');
         const joinKeyInput = document.getElementById('joinKey');
+        const STORAGE_KEY = 'star-office-agent-session';
+
+        function loadSavedSession() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (!parsed || typeof parsed !== 'object') return null;
+                return parsed;
+            } catch {
+                return null;
+            }
+        }
+
+        function saveSession(session) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+        }
+
+        function clearSession() {
+            localStorage.removeItem(STORAGE_KEY);
+        }
 
         function showStatus(text, ok) {
             statusDiv.style.display = 'block';
@@ -139,6 +160,7 @@
         async function join() {
             const name = agentNameInput.value.trim();
             const joinKey = joinKeyInput.value.trim();
+            const saved = loadSavedSession();
             if (!name) {
                 showStatus('请先输入你的名字～', false);
                 return;
@@ -151,10 +173,17 @@
                 const response = await fetch('/join-agent', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, joinKey })
+                    body: JSON.stringify({
+                        name,
+                        joinKey,
+                        agentId: saved && saved.name === name && saved.joinKey === joinKey ? saved.agentId : ''
+                    })
                 });
                 const data = await response.json();
                 if (data.ok) {
+                    if (data.agentId && data.leaveToken) {
+                        saveSession({ agentId: data.agentId, leaveToken: data.leaveToken, name, joinKey });
+                    }
                     showStatus('加入成功！刷新办公室就能看到你啦 ✨', true);
                 } else {
                     showStatus(data.msg || '加入失败', false);
@@ -166,18 +195,25 @@
 
         async function leave() {
             const name = agentNameInput.value.trim();
-            if (!name) {
-                showStatus('请先输入你要离开的名字～', false);
+            const joinKey = joinKeyInput.value.trim();
+            const saved = loadSavedSession();
+            if (!name || !joinKey) {
+                showStatus('请先输入加入时使用的名字和 join key～', false);
+                return;
+            }
+            if (!saved || saved.name !== name || saved.joinKey !== joinKey || !saved.agentId || !saved.leaveToken) {
+                showStatus('当前浏览器里没有这位 agent 的会话，请先用同一名字和 join key 加入一次', false);
                 return;
             }
             try {
                 const response = await fetch('/leave-agent', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name })
+                    body: JSON.stringify({ agentId: saved.agentId, leaveToken: saved.leaveToken, name })
                 });
                 const data = await response.json();
                 if (data.ok) {
+                    clearSession();
                     showStatus('已离开办公室 👋', true);
                 } else {
                     showStatus(data.msg || '离开失败', false);
@@ -185,6 +221,12 @@
             } catch (e) {
                 showStatus('网络出错，请重试', false);
             }
+        }
+
+        const saved = loadSavedSession();
+        if (saved) {
+            agentNameInput.value = saved.name || '';
+            joinKeyInput.value = saved.joinKey || '';
         }
 
         joinBtn.addEventListener('click', join);

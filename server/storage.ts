@@ -34,13 +34,21 @@ async function enqueueWrite(filePath: string, data: unknown) {
   return next;
 }
 
-export async function loadState(): Promise<MainState> {
-  const fallback: MainState = {
+export function createDefaultMainState(): MainState {
+  return {
     state: "idle",
     detail: "等待任务中...",
     progress: 0,
     updated_at: new Date().toISOString()
   };
+}
+
+export function createEmptyJoinKeysFile(): JoinKeysFile {
+  return { keys: [] };
+}
+
+export async function loadState(): Promise<MainState> {
+  const fallback = createDefaultMainState();
   const loaded = await readJson<MainState>(PATHS.stateFile);
   if (!loaded || typeof loaded !== "object") return fallback;
   return { ...fallback, ...loaded };
@@ -63,7 +71,7 @@ export async function saveAgentsState(agents: Agent[]) {
 export async function loadJoinKeys(): Promise<JoinKeysFile> {
   const loaded = await readJson<JoinKeysFile>(PATHS.joinKeysFile);
   if (loaded && Array.isArray(loaded.keys)) return loaded;
-  return { keys: [] };
+  return createEmptyJoinKeysFile();
 }
 
 export async function saveJoinKeys(data: JoinKeysFile) {

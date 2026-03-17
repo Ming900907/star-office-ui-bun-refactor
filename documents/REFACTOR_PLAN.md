@@ -29,13 +29,15 @@
 - API：/status /agents /join-agent /agent-push /yesterday-memo /openclaw/skills /openclaw/usage /agent-skills/*
 - 数据初始化：区分 sample 文件与生产文件，避免回退 sample 造成误接入
 - 数据源接入：优先 `OPENCLAW_*_SOURCE_URL`，未配置时走本机 CLI
+- 生产策略：允许配置 strict 模式，禁止 degraded fallback 混入正式验收
 - 回归：主页面、技能面板、用量面板、多 Agent 状态链路
 
 ## 风险
 - Bun 兼容性
 - 文件并发写
 - sample 数据误用于生产环境
-- 上游 source 不可用导致技能/用量面板空白
+- 上游 source 或本机 CLI 不可用时，技能/用量面板会退化为 fallback
+- strict 策略与默认降级策略的运维理解不一致
 
 ## 交付物
 - Bun 后端源码

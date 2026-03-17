@@ -1,6 +1,8 @@
-import { FEATURES, PATHS, SECURITY, SERVER, VALID_AGENT_STATES } from "./config";
+import { FEATURES, PATHS, SECURITY, SERVER, VALID_AGENT_STATES, requireHealthyOpenclawSource } from "./config";
 import { applyAutoIdle, DEFAULT_AGENTS, normalizeAgentState, readOfficeNameFromIdentity, stateToArea } from "./utils";
 import {
+  createDefaultMainState,
+  createEmptyJoinKeysFile,
   loadAgentsState,
   loadAssetDefaults,
   loadAssetPositions,
@@ -16,7 +18,7 @@ import {
   ensureHomeFavoritesIndex
 } from "./storage";
 import { getYesterdayMemo } from "./memo";
-import type { Agent, JoinKeysFile, MainState } from "./types";
+import type { Agent } from "./types";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -231,6 +233,21 @@ function featureDisabledResponse(feature: string) {
   }, 410);
 }
 
+function degradedSourceResponse(kind: "skills" | "usage", payload: Record<string, unknown>) {
+  return jsonResponse({
+    ok: false,
+    code: "DEGRADED_OPENCLAW_SOURCE",
+    kind,
+    msg: `OpenClaw ${kind} 数据源当前处于降级状态，strict mode 已拒绝该请求`,
+    ...payload,
+    strict: true
+  }, 503);
+}
+
+function makeAgentSessionToken() {
+  return `agt_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 async function authenticateSkillCaller(req: Request, data: any): Promise<{ ok: true; agent: Agent | null } | { ok: false; response: Response }> {
   if (!SECURITY.apiToken) return { ok: true, agent: null };
   if (hasValidApiToken(req)) return { ok: true, agent: null };
@@ -271,13 +288,7 @@ async function ensureStateFile() {
   try {
     await fs.access(PATHS.stateFile);
   } catch {
-    const defaultState: MainState = {
-      state: "idle",
-      detail: "等待任务中...",
-      progress: 0,
-      updated_at: new Date().toISOString()
-    };
-    await saveState(defaultState);
+    await saveState(createDefaultMainState());
   }
 }
 
@@ -286,7 +297,7 @@ async function ensureJoinKeysFile() {
     await fs.access(PATHS.joinKeysFile);
   } catch {
     if (SECURITY.isProduction) {
-      await fs.writeFile(PATHS.joinKeysFile, JSON.stringify({ keys: [] }, null, 2), "utf-8");
+      await fs.writeFile(PATHS.joinKeysFile, JSON.stringify(createEmptyJoinKeysFile(), null, 2), "utf-8");
       return;
     }
     const sample = path.resolve(PATHS.projectRoot, "join-keys.sample.json");
@@ -294,8 +305,17 @@ async function ensureJoinKeysFile() {
       const raw = await fs.readFile(sample, "utf-8");
       await fs.writeFile(PATHS.joinKeysFile, raw, "utf-8");
     } else {
-      await fs.writeFile(PATHS.joinKeysFile, JSON.stringify({ keys: [] }, null, 2), "utf-8");
+      await fs.writeFile(PATHS.joinKeysFile, JSON.stringify(createEmptyJoinKeysFile(), null, 2), "utf-8");
     }
+  }
+}
+
+export function __resetRouterForTests() {
+  joinLock = Promise.resolve();
+  skillsCache = null;
+  usageCache = null;
+  for (const bucket of Object.keys(rateBuckets)) {
+    delete rateBuckets[bucket];
   }
 }
 
@@ -315,6 +335,8 @@ type SkillsSourceResult = {
   source: string;
   skills: AgentSkill[];
   note?: string;
+  degraded?: boolean;
+  warnings?: string[];
 };
 
 type UsageOverview = {
@@ -346,6 +368,8 @@ type UsageOverview = {
     outputCostPer1k: number;
   };
   note: string;
+  degraded?: boolean;
+  warnings?: string[];
 };
 
 let skillsCache: { expiresAt: number; value: SkillsSourceResult } | null = null;
@@ -628,6 +652,7 @@ function normalizeSkillsFromPayload(payload: any): AgentSkill[] {
 }
 
 async function runJsonCommand(commands: string[][], timeoutMs = 6000) {
+  const errors: string[] = [];
   for (const command of commands) {
     try {
       const proc = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
@@ -640,21 +665,30 @@ async function runJsonCommand(commands: string[][], timeoutMs = 6000) {
       }, timeoutMs);
       const code = await proc.exited;
       clearTimeout(timeout);
-      if (code !== 0) continue;
+      if (code !== 0) {
+        const stderr = await new Response(proc.stderr).text();
+        errors.push(`${command.join(" ")} exited ${code}${stderr ? `: ${stderr.trim()}` : ""}`);
+        continue;
+      }
       const stdout = await new Response(proc.stdout).text();
       const text = String(stdout || "").trim();
-      if (!text) continue;
+      if (!text) {
+        errors.push(`${command.join(" ")} returned empty output`);
+        continue;
+      }
       try {
         const data = JSON.parse(text);
         return { ok: true, data };
       } catch {
+        errors.push(`${command.join(" ")} returned non-JSON output`);
         continue;
       }
-    } catch {
+    } catch (error) {
+      errors.push(`${command.join(" ")} failed: ${String((error as Error)?.message || error)}`);
       // try next command
     }
   }
-  return { ok: false, data: null };
+  return { ok: false, data: null, error: errors.join(" | ") };
 }
 
 async function getSkillsFromOpenclawCli(): Promise<SkillsSourceResult | null> {
@@ -711,6 +745,7 @@ async function resolveSkillsSource(): Promise<SkillsSourceResult> {
   const now = Date.now();
   if (skillsCache && skillsCache.expiresAt > now) return skillsCache.value;
 
+  const warnings: string[] = [];
   const sourceUrl = String(process.env.OPENCLAW_SKILLS_SOURCE_URL || "").trim();
   const sourceToken = String(process.env.OPENCLAW_SOURCE_TOKEN || "").trim();
   if (sourceUrl) {
@@ -719,23 +754,49 @@ async function resolveSkillsSource(): Promise<SkillsSourceResult> {
       const value = {
         source: "configured-upstream",
         skills: normalizeSkillsFromPayload(upstream.data),
-        note: "来源：OPENCLAW_SKILLS_SOURCE_URL"
+        note: "来源：OPENCLAW_SKILLS_SOURCE_URL",
+        degraded: false,
+        warnings: []
       } as SkillsSourceResult;
       skillsCache = { expiresAt: now + ttlMs, value };
       return value;
     }
+    warnings.push(`configured upstream unavailable: ${upstream.status || "network-error"}`);
   }
 
   const cliSkills = await getSkillsFromOpenclawCli();
   if (cliSkills && cliSkills.skills.length) {
-    skillsCache = { expiresAt: now + ttlMs, value: cliSkills };
-    return cliSkills;
+    const value: SkillsSourceResult = {
+      ...cliSkills,
+      degraded: warnings.length > 0,
+      warnings
+    };
+    if (warnings.length > 0) {
+      value.note = `${cliSkills.note}；已从失败的上游降级到本机 CLI`;
+    }
+    skillsCache = { expiresAt: now + ttlMs, value };
+    return value;
+  }
+
+  const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
+  const cliResult = await runJsonCommand([
+    [openclawBin, "skills", "list", "--json"],
+    ["openclaw", "skills", "list", "--json"],
+    [openclawBin, "skills", "list", "--eligible", "--json"],
+    ["openclaw", "skills", "list", "--eligible", "--json"]
+  ], Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000));
+  if (!cliResult.ok && cliResult.error) {
+    warnings.push(`local openclaw cli unavailable: ${cliResult.error}`);
   }
 
   const fallback: SkillsSourceResult = {
     source: "local-catalog-fallback",
     skills: getAgentSkillsCatalog(),
-    note: "未检测到 OpenClaw CLI 或 CLI 不可用，回退本地技能目录"
+    note: warnings.length
+      ? `已降级到本地技能目录；${warnings.join("；")}`
+      : "未检测到 OpenClaw CLI 或 CLI 不可用，回退本地技能目录",
+    degraded: true,
+    warnings
   };
   skillsCache = { expiresAt: now + ttlMs, value: fallback };
   return fallback;
@@ -746,6 +807,7 @@ async function resolveUsageSource(skills: AgentSkill[]): Promise<UsageOverview> 
   const now = Date.now();
   if (usageCache && usageCache.expiresAt > now) return usageCache.value;
 
+  const warnings: string[] = [];
   const sourceUrl = String(process.env.OPENCLAW_USAGE_SOURCE_URL || "").trim();
   const sourceToken = String(process.env.OPENCLAW_SOURCE_TOKEN || "").trim();
   if (sourceUrl) {
@@ -755,19 +817,45 @@ async function resolveUsageSource(skills: AgentSkill[]): Promise<UsageOverview> 
       if (normalized) {
         normalized.mode = "configured-upstream";
         normalized.note = "来源：OPENCLAW_USAGE_SOURCE_URL";
+        normalized.degraded = false;
+        normalized.warnings = [];
         usageCache = { expiresAt: now + ttlMs, value: normalized };
         return normalized;
       }
+      warnings.push("configured upstream returned unusable usage payload");
+    } else {
+      warnings.push(`configured upstream unavailable: ${upstream.status || "network-error"}`);
     }
   }
 
   const cliUsage = await getUsageFromOpenclawCli();
   if (cliUsage) {
+    cliUsage.degraded = warnings.length > 0;
+    cliUsage.warnings = warnings;
+    if (warnings.length > 0) {
+      cliUsage.note = `${cliUsage.note}；已从失败的上游降级到本机 CLI`;
+    }
     usageCache = { expiresAt: now + ttlMs, value: cliUsage };
     return cliUsage;
   }
 
+  const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
+  const cliResult = await runJsonCommand([
+    [openclawBin, "status", "--usage", "--json"],
+    ["openclaw", "status", "--usage", "--json"],
+    [openclawBin, "status", "--json"],
+    ["openclaw", "status", "--json"]
+  ], Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000));
+  if (!cliResult.ok && cliResult.error) {
+    warnings.push(`local openclaw cli unavailable: ${cliResult.error}`);
+  }
+
   const fallback = getOpenclawUsageOverview(skills);
+  fallback.degraded = true;
+  fallback.warnings = warnings;
+  if (warnings.length > 0) {
+    fallback.note = `已降级到本地估算；${warnings.join("；")}`;
+  }
   usageCache = { expiresAt: now + ttlMs, value: fallback };
   return fallback;
 }
@@ -888,11 +976,22 @@ export async function handleRequest(req: Request) {
 
   if (req.method === "GET" && pathName === "/openclaw/skills") {
     const resolved = await resolveSkillsSource();
+    if (requireHealthyOpenclawSource() && resolved.degraded) {
+      return degradedSourceResponse("skills", {
+        source: resolved.source,
+        degraded: true,
+        warnings: resolved.warnings || [],
+        note: resolved.note || "",
+        timestamp: new Date().toISOString()
+      });
+    }
     return jsonResponse({
       ok: true,
       source: resolved.source,
       skills: resolved.skills,
       count: resolved.skills.length,
+      degraded: !!resolved.degraded,
+      warnings: resolved.warnings || [],
       note: resolved.note || "",
       timestamp: new Date().toISOString()
     });
@@ -901,6 +1000,15 @@ export async function handleRequest(req: Request) {
   if (req.method === "GET" && pathName === "/openclaw/usage") {
     const skillsResolved = await resolveSkillsSource();
     const usage = await resolveUsageSource(skillsResolved.skills);
+    if (requireHealthyOpenclawSource() && usage.degraded) {
+      return degradedSourceResponse("usage", {
+        mode: usage.mode,
+        degraded: true,
+        warnings: usage.warnings || [],
+        note: usage.note || "",
+        timestamp: new Date().toISOString()
+      });
+    }
     return jsonResponse({
       ...usage,
       timestamp: new Date().toISOString()
@@ -995,7 +1103,7 @@ export async function handleRequest(req: Request) {
     await saveAgentsState(cleaned);
     await saveJoinKeys(keys);
     const safe = cleaned.map((a) => {
-      const { joinKey: _jk, ...rest } = a as Agent & { joinKey?: string };
+      const { joinKey: _jk, selfLeaveToken: _slt, ...rest } = a as Agent & { joinKey?: string; selfLeaveToken?: string | null };
       return rest;
     });
     return jsonResponse(safe);
@@ -1012,6 +1120,7 @@ export async function handleRequest(req: Request) {
     }
     const name = String(data.name).trim();
     const joinKey = String(data.joinKey || "").trim();
+    const requestedAgentId = String(data.agentId || "").trim();
     if (!joinKey) return jsonResponse({ ok: false, msg: "请提供接入密钥" }, 400);
 
     const state = normalizeAgentState(String(data.state || "idle"));
@@ -1039,8 +1148,11 @@ export async function handleRequest(req: Request) {
         return (now.getTime() - dt.getTime()) / 1000;
       };
 
-      const existing = agents.find((a) => !a.isMain && a.name === name);
-      const existingId = existing?.agentId;
+      const existingById = requestedAgentId
+        ? agents.find((a) => !a.isMain && a.agentId === requestedAgentId)
+        : null;
+      const existingNameHolder = agents.find((a) => !a.isMain && a.name === name);
+      const existingId = existingById?.agentId;
 
       for (const a of agents) {
         if (a.isMain) continue;
@@ -1074,19 +1186,30 @@ export async function handleRequest(req: Request) {
 
       const nowIso = new Date().toISOString();
       let agentId = existingId || "";
-      if (existing) {
-        existing.state = state;
-        existing.detail = detail;
-        existing.updated_at = nowIso;
-        existing.area = stateToArea(state);
-        existing.source = "remote-openclaw";
-        existing.joinKey = joinKey;
-        existing.authStatus = "approved";
-        existing.authApprovedAt = nowIso;
-        existing.authExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-        existing.lastPushAt = nowIso;
-        agentId = existing.agentId;
+      const leaveToken = makeAgentSessionToken();
+      if (existingById) {
+        if (existingById.joinKey !== joinKey) {
+          return jsonResponse({ ok: false, msg: "agentId 与 joinKey 不匹配" }, 403);
+        }
+        if (existingNameHolder && existingNameHolder.agentId !== existingById.agentId) {
+          return jsonResponse({ ok: false, msg: "该名字已被占用，请使用原名字重连或换一个名字" }, 409);
+        }
+        existingById.name = name;
+        existingById.state = state;
+        existingById.detail = detail;
+        existingById.updated_at = nowIso;
+        existingById.area = stateToArea(state);
+        existingById.source = "remote-openclaw";
+        existingById.authStatus = "approved";
+        existingById.authApprovedAt = nowIso;
+        existingById.authExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        existingById.lastPushAt = nowIso;
+        (existingById as any).selfLeaveToken = leaveToken;
+        agentId = existingById.agentId;
       } else {
+        if (existingNameHolder) {
+          return jsonResponse({ ok: false, msg: "该名字已被占用，请使用原 agentId 重连或换一个名字" }, 409);
+        }
         agentId = `agent_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const agent: Agent = {
           agentId,
@@ -1103,6 +1226,7 @@ export async function handleRequest(req: Request) {
           authExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
           lastPushAt: nowIso
         };
+        (agent as any).selfLeaveToken = leaveToken;
         agents.push(agent);
       }
 
@@ -1115,7 +1239,13 @@ export async function handleRequest(req: Request) {
       await saveAgentsState(agents);
       await saveJoinKeys(keys);
 
-      return jsonResponse({ ok: true, agentId, authStatus: "approved", nextStep: "已自动批准，立即开始推送状态" });
+      return jsonResponse({
+        ok: true,
+        agentId,
+        leaveToken,
+        authStatus: "approved",
+        nextStep: "已自动批准，立即开始推送状态"
+      });
     });
   }
 
@@ -1164,33 +1294,44 @@ export async function handleRequest(req: Request) {
   }
 
   if (req.method === "POST" && pathName === "/leave-agent") {
-    const guard = requireApiToken(req);
-    if (guard) return guard;
     const data = await readBodyJson(req);
     if (!data || typeof data !== "object") return jsonResponse({ ok: false, msg: "invalid json" }, 400);
     const agentId = String(data.agentId || "").trim();
     const name = String(data.name || "").trim();
-    if (!agentId && !name) return jsonResponse({ ok: false, msg: "请提供 agentId 或名字" }, 400);
-    const agents = await loadAgentsState(DEFAULT_AGENTS);
-    const target = agentId
-      ? agents.find((a) => a.agentId === agentId && !a.isMain)
-      : agents.find((a) => a.name === name && !a.isMain);
-    if (!target) return jsonResponse({ ok: false, msg: "没有找到要离开的 agent" }, 404);
-    const joinKey = target.joinKey;
-    const newAgents = agents.filter((a) => a.isMain || a.agentId !== target.agentId);
-    const keys = await loadJoinKeys();
-    if (joinKey) {
-      const keyItem = keys.keys.find((k) => k.key === joinKey);
-      if (keyItem) {
-        keyItem.used = false;
-        keyItem.usedBy = null;
-        keyItem.usedByAgentId = null;
-        keyItem.usedAt = null;
-      }
+    const leaveToken = String(data.leaveToken || "").trim();
+    const isAdmin = hasValidApiToken(req);
+    if (!isAdmin && (!agentId || !leaveToken)) {
+      return jsonResponse({ ok: false, msg: "自助离开需要 agentId 与 leaveToken" }, 400);
     }
-    await saveAgentsState(newAgents);
-    await saveJoinKeys(keys);
-    return jsonResponse({ ok: true });
+    if (isAdmin && !agentId && !name) return jsonResponse({ ok: false, msg: "请提供 agentId 或名字" }, 400);
+
+    return withJoinLock(async () => {
+      const agents = await loadAgentsState(DEFAULT_AGENTS);
+      const target = isAdmin
+        ? (agentId
+          ? agents.find((a) => a.agentId === agentId && !a.isMain)
+          : agents.find((a) => a.name === name && !a.isMain))
+        : agents.find((a) => a.agentId === agentId && !a.isMain);
+      if (!target) return jsonResponse({ ok: false, msg: "没有找到要离开的 agent" }, 404);
+      if (!isAdmin && String((target as any).selfLeaveToken || "") !== leaveToken) {
+        return jsonResponse({ ok: false, msg: "leaveToken 不匹配，不能代替其他 agent 离开" }, 403);
+      }
+      const targetJoinKey = target.joinKey;
+      const newAgents = agents.filter((a) => a.isMain || a.agentId !== target.agentId);
+      const keys = await loadJoinKeys();
+      if (targetJoinKey) {
+        const keyItem = keys.keys.find((k) => k.key === targetJoinKey);
+        if (keyItem) {
+          keyItem.used = false;
+          keyItem.usedBy = null;
+          keyItem.usedByAgentId = null;
+          keyItem.usedAt = null;
+        }
+      }
+      await saveAgentsState(newAgents);
+      await saveJoinKeys(keys);
+      return jsonResponse({ ok: true, agentId: target.agentId, mode: isAdmin ? "admin" : "self-service" });
+    });
   }
 
   if (req.method === "POST" && pathName === "/agent-push") {
@@ -1253,8 +1394,15 @@ export async function handleRequest(req: Request) {
     const data = await readBodyJson(req);
     const auth = await authenticateSkillCaller(req, data);
     if (!auth.ok) return auth.response;
-    const skills = getAgentSkillsCatalog();
-    return jsonResponse({ ok: true, skills, count: skills.length });
+    const resolved = await resolveSkillsSource();
+    return jsonResponse({
+      ok: true,
+      skills: resolved.skills,
+      count: resolved.skills.length,
+      source: resolved.source,
+      degraded: !!resolved.degraded,
+      warnings: resolved.warnings || []
+    });
   }
 
   if (req.method === "POST" && pathName === "/agent-skills/execute") {

@@ -7,7 +7,7 @@ A Bun-based backend refactor of **Star Office UI** (pixel-art AI office dashboar
 - Frontend entry (non‑gen): **done**
 - Regression checks: **done (manual)**
 - OpenClaw skills + usage panel: **done**
-- Production upstream source integration: **done**
+- Production source/CLI integration: **done**
 
 ## Differences vs Upstream
 Upstream project (Flask + Phaser) provides multi-agent status visualization, daily memo, asset customization, desktop pet mode, and optional AI room generation.
@@ -22,6 +22,7 @@ This refactor:
 - This repo contains several sample files for bootstrap/testing, including `state.sample.json`, `join-keys.sample.json`, and `runtime-config.sample.json`.
 - Current Bun backend behavior: if `join-keys.json` is missing at startup, it will auto-copy from `join-keys.sample.json`.
 - For production deployment, provide real `join-keys.json` and `state.json` explicitly instead of relying on sample defaults.
+- `bootstrap:prod` no longer seeds production from sample files; it creates production-safe defaults instead.
 
 ## Quick Start (Bun)
 ```bash
@@ -53,9 +54,11 @@ Use one command to let OpenClaw finish deployment config automatically:
 
 Behavior:
 - create/patch `.env`
-- initialize `state.json` / `join-keys.json` if missing
+- initialize `state.json` / `join-keys.json` with production-safe defaults if missing
 - enforce production-required settings
 - validate `/health`, `/status`, `/openclaw/skills`, `/openclaw/usage`
+- report whether OpenClaw panels are running in `configured-upstream`, `openclaw-cli`, or degraded fallback mode
+- optionally fail bootstrap when degraded panel data is not acceptable (`OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`)
 
 ## Environment
 - `PORT` (default `19000`)
@@ -70,6 +73,7 @@ Behavior:
 - `OPENCLAW_USAGE_SOURCE_URL` (optional upstream for `/openclaw/usage`)
 - `OPENCLAW_SOURCE_TOKEN` (optional bearer token for upstream calls)
 - `OPENCLAW_BIN` (default `openclaw`, used for local CLI fallback)
+- `OPENCLAW_REQUIRE_HEALTHY_SOURCE` (`0` by default; when `1`, degraded skills/usage are treated as failure)
 - See `.env.example` for a full template.
 
 ## Agent Skills API
@@ -83,9 +87,13 @@ Default behavior now disables legacy status/decorate entry points in favor of ag
 2. local OpenClaw CLI (`openclaw skills list --json`, `openclaw status --usage --json`)
 3. local fallback estimation
 
+Production policy options:
+1. degraded-tolerant: keep `OPENCLAW_REQUIRE_HEALTHY_SOURCE=0` and allow fallback mode
+2. strict: set `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1` and fail bootstrap / panel requests when only degraded data is available
+
 ## Security Notes (VPS)
 - In production mode (`STAR_OFFICE_ENV=production`), startup will fail if `ASSET_DRAWER_PASS` is default or `STAR_OFFICE_API_TOKEN` is missing.
-- Sensitive write APIs (`/set_state`, `/agent-approve`, `/agent-reject`, `/leave-agent`) require `Authorization: Bearer <STAR_OFFICE_API_TOKEN>`.
+- Sensitive admin APIs (`/set_state`, `/agent-approve`, `/agent-reject`) require `Authorization: Bearer <STAR_OFFICE_API_TOKEN>`.
 - `/agents` output is sanitized and no longer exposes `joinKey`.
 - Basic in-memory rate limiting is enabled for `/assets/auth` and `/join-agent`.
 

@@ -27,6 +27,7 @@ export type Agent = {
   authApprovedAt?: string | null;
   authRejectedAt?: string | null;
   lastPushAt?: string | null;
+  selfLeaveToken?: string | null;
 };
 
 export type JoinKeyItem = {

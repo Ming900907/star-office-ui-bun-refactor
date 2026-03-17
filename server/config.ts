@@ -46,6 +46,10 @@ export const FEATURES = {
   enableAgentSkillsApi: ["1", "true", "yes", "on"].includes((process.env.ENABLE_AGENT_SKILLS_API || "1").toLowerCase())
 };
 
+export function requireHealthyOpenclawSource() {
+  return ["1", "true", "yes", "on"].includes((process.env.OPENCLAW_REQUIRE_HEALTHY_SOURCE || "0").toLowerCase());
+}
+
 export const VALID_AGENT_STATES = new Set(["idle", "writing", "researching", "executing", "syncing", "error"]);
 export const WORKING_STATES = new Set(["writing", "researching", "executing"]);
 export const STATE_TO_AREA_MAP: Record<string, string> = {

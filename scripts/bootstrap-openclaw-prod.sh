@@ -8,9 +8,7 @@ BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
 ENV_FILE="$ROOT_DIR/.env"
 ENV_EXAMPLE="$ROOT_DIR/.env.example"
 STATE_FILE="$ROOT_DIR/state.json"
-STATE_SAMPLE="$ROOT_DIR/state.sample.json"
 JOIN_KEYS_FILE="$ROOT_DIR/join-keys.json"
-JOIN_KEYS_SAMPLE="$ROOT_DIR/join-keys.sample.json"
 LOG_FILE="${BOOTSTRAP_LOG_FILE:-/tmp/star-office-bootstrap.log}"
 
 if [[ ! -x "$BUN_BIN" ]]; then
@@ -24,14 +22,14 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "✅ Created .env from .env.example"
 fi
 
-if [[ ! -f "$STATE_FILE" && -f "$STATE_SAMPLE" ]]; then
-  cp "$STATE_SAMPLE" "$STATE_FILE"
-  echo "✅ Initialized state.json from sample"
+if [[ ! -f "$STATE_FILE" ]]; then
+  printf '{\n  "state": "idle",\n  "detail": "等待任务中...",\n  "progress": 0,\n  "updated_at": "%s"\n}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_FILE"
+  echo "✅ Initialized state.json with production-safe defaults"
 fi
 
-if [[ ! -f "$JOIN_KEYS_FILE" && -f "$JOIN_KEYS_SAMPLE" ]]; then
-  cp "$JOIN_KEYS_SAMPLE" "$JOIN_KEYS_FILE"
-  echo "✅ Initialized join-keys.json from sample"
+if [[ ! -f "$JOIN_KEYS_FILE" ]]; then
+  printf '{\n  "keys": []\n}\n' > "$JOIN_KEYS_FILE"
+  echo "✅ Initialized join-keys.json as empty production inventory"
 fi
 
 upsert_env() {
@@ -88,6 +86,7 @@ fi
 BASE_URL="${OPENCLAW_API_BASE_URL:-}"
 SKILLS_URL="${OPENCLAW_SKILLS_SOURCE_URL:-}"
 USAGE_URL="${OPENCLAW_USAGE_SOURCE_URL:-}"
+STRICT_SOURCE_HEALTH="${OPENCLAW_REQUIRE_HEALTHY_SOURCE:-0}"
 
 if [[ -n "$BASE_URL" ]]; then
   BASE_URL="${BASE_URL%/}"
@@ -104,6 +103,7 @@ if [[ -n "$BASE_URL" ]]; then
 fi
 
 read_env_file
+STRICT_SOURCE_HEALTH="${OPENCLAW_REQUIRE_HEALTHY_SOURCE:-0}"
 
 echo "== Installing dependencies =="
 "$BUN_BIN" install >/dev/null
@@ -145,15 +145,71 @@ check_endpoint() {
   echo "✅ ${path}"
 }
 
+json_field() {
+  local payload="$1"
+  local expr="$2"
+  printf '%s' "$payload" | "$BUN_BIN" -e '
+    const expr = process.argv[1] || "";
+    const input = await new Response(Bun.stdin.stream()).text();
+    const data = JSON.parse(input || "{}");
+    let value = data;
+    for (const key of expr.split(".").filter(Boolean)) value = value?.[key];
+    if (value === undefined || value === null) process.exit(2);
+    if (typeof value === "object") process.stdout.write(JSON.stringify(value));
+    else process.stdout.write(String(value));
+  ' "$expr"
+}
+
+inspect_openclaw_endpoint() {
+  local path="$1"
+  local label="$2"
+  local field="$3"
+  local payload
+  payload="$(curl -fsS "${BASE_LOCAL_URL}${path}")" || {
+    echo "❌ Validation failed: ${path}"
+    echo "   check log: ${LOG_FILE}"
+    exit 1
+  }
+
+  local ok value quality
+  ok="$(json_field "$payload" "ok" 2>/dev/null || true)"
+  value="$(json_field "$payload" "$field" 2>/dev/null || true)"
+  if [[ "$ok" != "true" ]]; then
+    echo "❌ Validation failed: ${path} returned ok=${ok:-missing}"
+    echo "   check log: ${LOG_FILE}"
+    exit 1
+  fi
+
+  quality="healthy"
+  if [[ -z "$value" ]]; then
+    quality="degraded"
+  elif [[ "$value" == *fallback* || "$value" == "estimated" ]]; then
+    quality="degraded"
+  fi
+
+  echo "✅ ${path} (${label}: ${value:-unknown}, quality: ${quality})"
+  LAST_ENDPOINT_VALUE="$value"
+  LAST_ENDPOINT_QUALITY="$quality"
+}
+
 echo "== Running validation checks =="
 check_endpoint "/health"
 check_endpoint "/status"
-check_endpoint "/openclaw/skills"
-check_endpoint "/openclaw/usage"
+inspect_openclaw_endpoint "/openclaw/skills" "source" "source"
+skills_source_label="${LAST_ENDPOINT_VALUE:-unknown}"
+skills_quality="${LAST_ENDPOINT_QUALITY:-degraded}"
+inspect_openclaw_endpoint "/openclaw/usage" "mode" "mode"
+usage_source_label="${LAST_ENDPOINT_VALUE:-unknown}"
+usage_quality="${LAST_ENDPOINT_QUALITY:-degraded}"
 
 short_token="${STAR_OFFICE_API_TOKEN:0:6}***"
-skills_source_label="${OPENCLAW_SKILLS_SOURCE_URL:-openclaw-cli-or-local-fallback}"
-usage_source_label="${OPENCLAW_USAGE_SOURCE_URL:-openclaw-cli-or-local-fallback}"
+overall_readiness="yes"
+if [[ "$skills_quality" == "degraded" || "$usage_quality" == "degraded" ]]; then
+  overall_readiness="degraded"
+fi
+if [[ "$STRICT_SOURCE_HEALTH" == "1" && "$overall_readiness" == "degraded" ]]; then
+  overall_readiness="failed"
+fi
 echo ""
 echo "==== OpenClaw bootstrap summary ===="
 echo "env: production"
@@ -161,5 +217,15 @@ echo "host: ${HOST_VAL}"
 echo "port: ${PORT_VAL}"
 echo "skills source: ${skills_source_label}"
 echo "usage source: ${usage_source_label}"
+echo "skills quality: ${skills_quality}"
+echo "usage quality: ${usage_quality}"
+echo "require healthy source: ${STRICT_SOURCE_HEALTH}"
 echo "api token: ${short_token}"
-echo "ready: yes"
+echo "ready: ${overall_readiness}"
+if [[ "$overall_readiness" == "degraded" ]]; then
+  echo "note: service is reachable, but OpenClaw panels are currently using fallback data."
+fi
+if [[ "$overall_readiness" == "failed" ]]; then
+  echo "note: strict mode is enabled and panel data is degraded."
+  exit 1
+fi

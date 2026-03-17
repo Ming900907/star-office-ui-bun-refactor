@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun run server/index.ts",
     "start": "bun run server/index.ts",
+    "test": "bun test",
     "bootstrap:prod": "bash scripts/bootstrap-openclaw-prod.sh",
     "state": "bun run scripts/set-state.ts",
     "state:writing": "bun run scripts/set-state.ts writing \"正在整理文档\"",

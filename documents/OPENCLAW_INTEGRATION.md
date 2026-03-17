@@ -17,9 +17,10 @@
 
 该命令会自动完成：
 - `.env` 创建与生产字段校验
-- `state.json` / `join-keys.json` 初始化
+- `state.json` / `join-keys.json` 生产安全初始化
 - OpenClaw source/CLI 可用性校验
 - `/health`、`/status`、`/openclaw/skills`、`/openclaw/usage` 验收
+- 若设置 strict 模式，则在 skills/usage 处于 degraded 时直接失败
 
 ## 方案 A：同机（OpenClaw 与 Office 同 VPS）
 1. 启动 Bun 后端（systemd）
@@ -41,7 +42,9 @@ Environment=PORT=19000
 Environment=HOST=127.0.0.1
 Environment=ASSET_DRAWER_PASS=your-strong-pass
 Environment=STAR_OFFICE_ENV=production
+Environment=STAR_OFFICE_API_TOKEN=your-long-random-token
 Environment=OPENCLAW_BIN=openclaw
+Environment=OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
 # Optional upstream:
 # Environment=OPENCLAW_SKILLS_SOURCE_URL=https://your-openclaw-api.example.com/skills
 # Environment=OPENCLAW_USAGE_SOURCE_URL=https://your-openclaw-api.example.com/usage
@@ -90,12 +93,19 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=https://office.example.co
 - `OFFICE_LOCAL_STATE_FILE`：OpenClaw `state.json` 路径
 - `OFFICE_STALE_STATE_TTL`：状态过期回 idle（秒）
 - `OPENCLAW_BIN`：OpenClaw 可执行文件名或路径（默认 `openclaw`）
+- `OPENCLAW_REQUIRE_HEALTHY_SOURCE`：`1` 时要求 skills/usage 必须是健康 source，fallback 直接视为失败
 - `OPENCLAW_SKILLS_SOURCE_URL`：Office 技能面板上游（可选）
 - `OPENCLAW_USAGE_SOURCE_URL`：Office 用量面板上游（可选）
 - `OPENCLAW_SOURCE_TOKEN`：上游鉴权 token（可选）
 
+### 严格模式选择
+- degraded-tolerant：`OPENCLAW_REQUIRE_HEALTHY_SOURCE=0`
+  适合先把服务跑起来，允许暂时使用 fallback 数据。
+- strict：`OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`
+  适合正式生产验收，要求 skills/usage 必须来自健康的 upstream 或本机 CLI。
+
 ## 最小验证
 - `GET /health` / `GET /status`
-- `GET /openclaw/skills` / `GET /openclaw/usage`（应返回可用 source，不再强制 upstream）
+- `GET /openclaw/skills` / `GET /openclaw/usage`（检查 `source` / `mode`，优先 `configured-upstream` 或 `openclaw-cli`；fallback 视为降级）
 - `POST /join-agent` → `POST /agent-push`
 - 页面能看到状态变化
