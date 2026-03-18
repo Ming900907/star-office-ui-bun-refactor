@@ -1,7 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { promises as fs } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { PATHS, SECURITY } from "../config";
 import { handleRequest, __resetRouterForTests } from "../router";
 import { createDefaultMainState } from "../storage";
@@ -21,11 +19,7 @@ const BACKUP_TARGETS = [
 ];
 
 const backups = new Map<string, BackupEntry>();
-const originalOpenclawBin = process.env.OPENCLAW_BIN;
-const originalSkillsSource = process.env.OPENCLAW_SKILLS_SOURCE_URL;
-const originalUsageSource = process.env.OPENCLAW_USAGE_SOURCE_URL;
 const originalRequireHealthySource = process.env.OPENCLAW_REQUIRE_HEALTHY_SOURCE;
-let fakeOpenclawBinPath = "";
 
 async function backupFile(filePath: string) {
   try {
@@ -77,14 +71,10 @@ beforeAll(async () => {
   for (const filePath of BACKUP_TARGETS) {
     await backupFile(filePath);
   }
-  fakeOpenclawBinPath = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-fake-")), "openclaw");
 });
 
 beforeEach(async () => {
   __resetRouterForTests();
-  process.env.OPENCLAW_BIN = originalOpenclawBin;
-  process.env.OPENCLAW_SKILLS_SOURCE_URL = originalSkillsSource;
-  process.env.OPENCLAW_USAGE_SOURCE_URL = originalUsageSource;
   process.env.OPENCLAW_REQUIRE_HEALTHY_SOURCE = originalRequireHealthySource;
   await seedRuntimeFiles();
 });
@@ -93,46 +83,29 @@ afterAll(async () => {
   for (const filePath of BACKUP_TARGETS) {
     await restoreFile(filePath);
   }
-  process.env.OPENCLAW_BIN = originalOpenclawBin;
-  process.env.OPENCLAW_SKILLS_SOURCE_URL = originalSkillsSource;
-  process.env.OPENCLAW_USAGE_SOURCE_URL = originalUsageSource;
   process.env.OPENCLAW_REQUIRE_HEALTHY_SOURCE = originalRequireHealthySource;
   __resetRouterForTests();
-  if (fakeOpenclawBinPath) {
-    await fs.rm(path.dirname(fakeOpenclawBinPath), { recursive: true, force: true });
-  }
 });
 
-async function installFakeOpenclawCli() {
-  const script = `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$1" == "skills" && "$2" == "list" ]]; then
-  cat <<'JSON'
-{"skills":[{"id":"openclaw.set-main-state","name":"Set Main State","description":"sync state","inputSchema":{"state":"string"}}]}
-JSON
-  exit 0
-fi
-if [[ "$1" == "status" ]]; then
-  cat <<'JSON'
-{"summary":{"inputTokens":12,"outputTokens":8,"totalTokens":20,"estimatedCostUsd":0.0002},"byModel":[{"model":"fake-openclaw","inputTokens":12,"outputTokens":8,"totalTokens":20,"estimatedCostUsd":0.0002}],"byChannel":[{"channel":"openclaw","inputTokens":12,"outputTokens":8,"totalTokens":20,"estimatedCostUsd":0.0002}]}
-JSON
-  exit 0
-fi
-echo "unsupported args: $*" >&2
-exit 1
-`;
-  await fs.writeFile(fakeOpenclawBinPath, script, "utf-8");
-  await fs.chmod(fakeOpenclawBinPath, 0o755);
-}
-
-async function installFailingOpenclawCli() {
-  const script = `#!/usr/bin/env bash
-set -euo pipefail
-echo "simulated failure" >&2
-exit 1
-`;
-  await fs.writeFile(fakeOpenclawBinPath, script, "utf-8");
-  await fs.chmod(fakeOpenclawBinPath, 0o755);
+function makeSyncPayload() {
+  return {
+    skillsPayload: {
+      skills: [
+        {
+          id: "openclaw.set-main-state",
+          name: "Set Main State",
+          description: "sync state",
+          inputSchema: { state: "string" },
+          tokenCost: { estimatedInputTokens: 12, estimatedOutputTokens: 8 }
+        }
+      ]
+    },
+    usagePayload: {
+      summary: { inputTokens: 12, outputTokens: 8, totalTokens: 20, estimatedCostUsd: 0.0002 },
+      byModel: [{ model: "fake-openclaw", inputTokens: 12, outputTokens: 8, totalTokens: 20, estimatedCostUsd: 0.0002 }],
+      byChannel: [{ channel: "openclaw", inputTokens: 12, outputTokens: 8, totalTokens: 20, estimatedCostUsd: 0.0002 }]
+    }
+  };
 }
 
 describe("router high-risk flows", () => {
@@ -192,9 +165,6 @@ describe("router high-risk flows", () => {
   });
 
   test("skills and usage endpoints expose degraded metadata when cache is missing", async () => {
-    process.env.OPENCLAW_BIN = "definitely-missing-openclaw-bin";
-    __resetRouterForTests();
-
     const skills = await requestJson("/openclaw/skills");
     expect(skills.status).toBe(200);
     expect(skills.body?.ok).toBe(true);
@@ -217,9 +187,6 @@ describe("router high-risk flows", () => {
   });
 
   test("strict mode rejects degraded skills and usage responses", async () => {
-    process.env.OPENCLAW_BIN = "definitely-missing-openclaw-bin";
-    delete process.env.OPENCLAW_SKILLS_SOURCE_URL;
-    delete process.env.OPENCLAW_USAGE_SOURCE_URL;
     process.env.OPENCLAW_REQUIRE_HEALTHY_SOURCE = "1";
     __resetRouterForTests();
 
@@ -238,11 +205,7 @@ describe("router high-risk flows", () => {
     expect(usage.body?.strict).toBe(true);
   });
 
-  test("openclaw sync endpoint executes CLI and refreshes cached skills and usage", async () => {
-    await installFakeOpenclawCli();
-    process.env.OPENCLAW_BIN = fakeOpenclawBinPath;
-    __resetRouterForTests();
-
+  test("openclaw sync endpoint accepts pushed snapshots and refreshes cached skills and usage", async () => {
     const joined = await requestJson("/join-agent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -255,34 +218,31 @@ describe("router high-risk flows", () => {
       body: JSON.stringify({
         agentId: joined.body.agentId,
         joinKey: "ocj_test_1",
-        scope: "all"
+        scope: "all",
+        ...makeSyncPayload()
       })
     });
 
     expect(sync.status).toBe(200);
     expect(sync.body?.ok).toBe(true);
-    expect(sync.body?.skills?.source).toBe("openclaw-cli");
-    expect(sync.body?.usage?.mode).toBe("openclaw-cli-usage");
+    expect(sync.body?.skills?.source).toBe("openclaw-push");
+    expect(sync.body?.usage?.mode).toBe("openclaw-pushed-usage");
 
     const skills = await requestJson("/openclaw/skills");
     expect(skills.status).toBe(200);
-    expect(skills.body?.source).toBe("openclaw-cli");
+    expect(skills.body?.source).toBe("openclaw-push");
     expect(skills.body?.degraded).toBe(false);
     expect(skills.body?.count).toBeGreaterThan(0);
     expect(typeof skills.body?.syncedAt).toBe("string");
 
     const usage = await requestJson("/openclaw/usage");
     expect(usage.status).toBe(200);
-    expect(usage.body?.mode).toBe("openclaw-cli-usage");
+    expect(usage.body?.mode).toBe("openclaw-pushed-usage");
     expect(usage.body?.degraded).toBe(false);
     expect(usage.body?.summary?.totalTokens).toBe(20);
   });
 
-  test("degraded sync returns failure and preserves previous healthy cache", async () => {
-    await installFakeOpenclawCli();
-    process.env.OPENCLAW_BIN = fakeOpenclawBinPath;
-    __resetRouterForTests();
-
+  test("degraded pushed sync returns failure and preserves previous healthy cache", async () => {
     const joined = await requestJson("/join-agent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -295,16 +255,13 @@ describe("router high-risk flows", () => {
       body: JSON.stringify({
         agentId: joined.body.agentId,
         joinKey: "ocj_test_1",
-        scope: "all"
+        scope: "all",
+        ...makeSyncPayload()
       })
     });
 
     expect(firstSync.status).toBe(200);
     expect(firstSync.body?.ok).toBe(true);
-
-    await installFailingOpenclawCli();
-    process.env.OPENCLAW_BIN = fakeOpenclawBinPath;
-    __resetRouterForTests();
 
     const degradedSync = await requestJson("/openclaw/sync", {
       method: "POST",
@@ -312,7 +269,9 @@ describe("router high-risk flows", () => {
       body: JSON.stringify({
         agentId: joined.body.agentId,
         joinKey: "ocj_test_1",
-        scope: "all"
+        scope: "all",
+        skillsError: "simulated skills failure",
+        usageError: "simulated usage failure"
       })
     });
 
@@ -322,12 +281,12 @@ describe("router high-risk flows", () => {
 
     const skills = await requestJson("/openclaw/skills");
     expect(skills.status).toBe(200);
-    expect(skills.body?.source).toBe("openclaw-cli");
+    expect(skills.body?.source).toBe("openclaw-push");
     expect(skills.body?.degraded).toBe(false);
 
     const usage = await requestJson("/openclaw/usage");
     expect(usage.status).toBe(200);
-    expect(usage.body?.mode).toBe("openclaw-cli-usage");
+    expect(usage.body?.mode).toBe("openclaw-pushed-usage");
     expect(usage.body?.degraded).toBe(false);
   });
 

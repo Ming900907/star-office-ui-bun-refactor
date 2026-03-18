@@ -26,7 +26,7 @@
 | POST | `/agent-reject` | 拒绝并移除 |
 | POST | `/leave-agent` | 离开并释放 key（管理员或自助离开） |
 | POST | `/agent-push` | 推送状态 |
-| POST | `/openclaw/sync` | OpenClaw/Agent 主动触发 skills + usage CLI 同步并刷新缓存 |
+| POST | `/openclaw/sync` | OpenClaw/Agent 主动推送 skills + usage 快照并刷新缓存 |
 | POST | `/agent-skills/list` | 列出 OpenClaw 可用技能 |
 | POST | `/agent-skills/execute` | 以技能方式执行状态/装修能力 |
 | GET | `/yesterday-memo` | 昨日小记 |
@@ -68,6 +68,6 @@
 - `/system-info`：新增设备指标输出（Linux/macOS 通用；Windows 下 `loadavg` 不具代表性）
 - 新增 feature flags：`ENABLE_STATE_CONTROL`、`ENABLE_ASSET_DECORATION`、`ENABLE_AGENT_SKILLS_API`
 - 默认策略：`/set_state` 与 `/assets/*` 下线（410），统一迁移到 `/agent-skills/execute`
-- panel 数据链路：由 OpenClaw 调用 `/openclaw/sync`，服务端执行本机 CLI 并缓存，前端仅读取缓存
+- panel 数据链路：由 OpenClaw 调用 `/openclaw/sync` 推送快照，服务端缓存，前端仅读取缓存
 - 缓存字段：`syncedAt`、`stale`、`cacheAgeSeconds`、`degraded`、`warnings`
 - 可选 strict 策略：`OPENCLAW_REQUIRE_HEALTHY_SOURCE=1` 时，skills/usage 降级不再视为可接受状态

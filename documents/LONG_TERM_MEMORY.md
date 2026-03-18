@@ -12,7 +12,7 @@ Star-Office-UI Bun 后端重构
 - 前端改动最小化
 - 数据文件格式兼容
 - API 路径与响应尽量一致
-- 生产环境 skills/usage 走 OpenClaw sync/cache 模式：OpenClaw 调用接口，服务端执行本机 CLI 并写入缓存
+- 生产环境 skills/usage 走 OpenClaw sync/cache 模式：OpenClaw 调用接口，推送自身采集的快照，服务端写入缓存
 - 生产环境可按需要开启 strict 模式，禁止 degraded fallback
 
 ## 非目标

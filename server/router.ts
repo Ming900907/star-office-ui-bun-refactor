@@ -456,7 +456,7 @@ function normalizeUsageFromPayload(payload: any): UsageOverview | null {
 
   return {
     ok: true,
-    mode: "openclaw-cli-usage",
+    mode: "openclaw-pushed-usage",
     currency: String(src?.currency || "USD"),
     summary: {
       inputTokens,
@@ -467,7 +467,7 @@ function normalizeUsageFromPayload(payload: any): UsageOverview | null {
     byModel: normalizedModels,
     byChannel: normalizedChannels,
     costPolicy: { inputCostPer1k, outputCostPer1k },
-    note: "来源：openclaw status --usage --json（本机 CLI 实时聚合）",
+    note: "来源：OpenClaw 推送的 usage 快照",
     degraded: false,
     warnings: [],
     syncedAt: new Date().toISOString()
@@ -559,81 +559,11 @@ function getOpenclawUsageOverview(skills: AgentSkill[]) {
   };
 }
 
-function normalizeSkillsFromPayload(payload: any): AgentSkill[] {
-  const fallback = getAgentSkillsCatalog();
-  const fallbackMap = new Map(fallback.map((s) => [s.id, s]));
-  const list = Array.isArray(payload)
-    ? payload
-    : Array.isArray(payload?.skills)
-      ? payload.skills
-      : Array.isArray(payload?.items)
-        ? payload.items
-        : [];
-
-  const normalized = list
-    .map((it: any) => {
-      const id = String(it?.id || "").trim();
-      if (!id) return null;
-      const ref = fallbackMap.get(id);
-      const tokenCost = it?.tokenCost || it?.token_cost || ref?.tokenCost || {
-        estimatedInputTokens: 0,
-        estimatedOutputTokens: 0
-      };
-      return {
-        id,
-        name: String(it?.name || ref?.name || id),
-        description: String(it?.description || ref?.description || ""),
-        inputSchema: (it?.inputSchema && typeof it.inputSchema === "object") ? it.inputSchema : (ref?.inputSchema || {}),
-        tokenCost: {
-          estimatedInputTokens: Number(tokenCost?.estimatedInputTokens || tokenCost?.estimated_input_tokens || 0),
-          estimatedOutputTokens: Number(tokenCost?.estimatedOutputTokens || tokenCost?.estimated_output_tokens || 0),
-          note: typeof tokenCost?.note === "string" ? tokenCost.note : (ref?.tokenCost?.note || "")
-        }
-      } as AgentSkill;
-    })
-    .filter(Boolean) as AgentSkill[];
-
-  return normalized.length ? normalized : fallback;
-}
-
-async function runJsonCommand(commands: string[][], timeoutMs = 6000) {
-  const errors: string[] = [];
-  for (const command of commands) {
-    try {
-      const proc = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
-      const timeout = setTimeout(() => {
-        try {
-          proc.kill();
-        } catch {
-          // ignore
-        }
-      }, timeoutMs);
-      const code = await proc.exited;
-      clearTimeout(timeout);
-      if (code !== 0) {
-        const stderr = await new Response(proc.stderr).text();
-        errors.push(`${command.join(" ")} exited ${code}${stderr ? `: ${stderr.trim()}` : ""}`);
-        continue;
-      }
-      const stdout = await new Response(proc.stdout).text();
-      const text = String(stdout || "").trim();
-      if (!text) {
-        errors.push(`${command.join(" ")} returned empty output`);
-        continue;
-      }
-      try {
-        const data = JSON.parse(text);
-        return { ok: true, data };
-      } catch {
-        errors.push(`${command.join(" ")} returned non-JSON output`);
-        continue;
-      }
-    } catch (error) {
-      errors.push(`${command.join(" ")} failed: ${String((error as Error)?.message || error)}`);
-      // try next command
-    }
+function getPayloadList(payload: any, keys: string[]) {
+  for (const key of keys) {
+    if (Array.isArray(payload?.[key])) return payload[key];
   }
-  return { ok: false, data: null, error: errors.join(" | ") };
+  return null;
 }
 
 function buildSkillsFallbackSnapshot(warnings: string[], note?: string): SkillsSourceResult {
@@ -657,6 +587,51 @@ function buildUsageFallbackSnapshot(skills: AgentSkill[], warnings: string[], no
   fallback.note = note || (warnings.length ? `已降级到本地估算；${warnings.join("；")}` : fallback.note);
   fallback.syncedAt = new Date().toISOString();
   return fallback;
+}
+
+function normalizePushedSkillsSnapshot(payload: any): SkillsSourceResult | null {
+  if (!payload) return null;
+  const fallback = getAgentSkillsCatalog();
+  const fallbackMap = new Map(fallback.map((s) => [s.id, s]));
+  const list = Array.isArray(payload)
+    ? payload
+    : getPayloadList(payload, ["skills", "items"]);
+  if (!Array.isArray(list) || !list.length) return null;
+
+  const skills = list
+    .map((it: any) => {
+      const id = String(it?.id || "").trim();
+      if (!id) return null;
+      const ref = fallbackMap.get(id);
+      const tokenCost = it?.tokenCost || it?.token_cost || ref?.tokenCost || {
+        estimatedInputTokens: 0,
+        estimatedOutputTokens: 0
+      };
+      return {
+        id,
+        name: String(it?.name || ref?.name || id),
+        description: String(it?.description || ref?.description || ""),
+        inputSchema: (it?.inputSchema && typeof it.inputSchema === "object") ? it.inputSchema : (ref?.inputSchema || {}),
+        tokenCost: {
+          estimatedInputTokens: Number(tokenCost?.estimatedInputTokens || tokenCost?.estimated_input_tokens || 0),
+          estimatedOutputTokens: Number(tokenCost?.estimatedOutputTokens || tokenCost?.estimated_output_tokens || 0),
+          note: typeof tokenCost?.note === "string" ? tokenCost.note : (ref?.tokenCost?.note || "")
+        }
+      } as AgentSkill;
+    })
+    .filter(Boolean) as AgentSkill[];
+
+  if (!skills.length) return null;
+  return {
+    ok: true,
+    source: "openclaw-push",
+    skills,
+    count: skills.length,
+    degraded: false,
+    warnings: [],
+    note: "来源：OpenClaw 推送的 skills 快照",
+    syncedAt: new Date().toISOString()
+  };
 }
 
 function appendCacheHealth<T extends { degraded: boolean; warnings: string[]; note: string; syncedAt: string }>(payload: T) {
@@ -704,95 +679,7 @@ function mergePreservedSnapshotWarnings<T extends { degraded: boolean; warnings:
   };
 }
 
-async function getSkillsFromOpenclawCli(): Promise<SkillsSourceResult | null> {
-  const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
-  const timeoutMs = Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000);
-  const result = await runJsonCommand([
-    [openclawBin, "skills", "list", "--json"],
-    ["openclaw", "skills", "list", "--json"],
-    [openclawBin, "skills", "list", "--eligible", "--json"],
-    ["openclaw", "skills", "list", "--eligible", "--json"]
-  ], timeoutMs);
-  if (!result.ok) return null;
-
-  const rawSkills = normalizeSkillsFromPayload(result.data);
-  const skills = rawSkills.map((it) => {
-    const location = String((it as any)?.location || "");
-    const escapedNameLen = xmlEscape(it.name || it.id).length;
-    const escapedDescLen = xmlEscape(it.description || "").length;
-    const escapedLocLen = xmlEscape(location || it.id).length;
-    const chars = 97 + escapedNameLen + escapedDescLen + escapedLocLen;
-    const promptTokensApprox = Math.max(1, Math.round(chars / 4));
-    return {
-      ...it,
-      tokenCost: {
-        estimatedInputTokens: promptTokensApprox,
-        estimatedOutputTokens: 0,
-        note: "基于 OpenClaw docs 的技能注入字符公式估算（约 4 chars/token）"
-      }
-    };
-  });
-
-  return {
-    ok: true,
-    source: "openclaw-cli",
-    skills,
-    count: skills.length,
-    degraded: false,
-    warnings: [],
-    note: "来源：openclaw skills list --json",
-    syncedAt: new Date().toISOString()
-  };
-}
-
-async function getUsageFromOpenclawCli(): Promise<UsageOverview | null> {
-  const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
-  const timeoutMs = Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000);
-  const result = await runJsonCommand([
-    [openclawBin, "status", "--usage", "--json"],
-    ["openclaw", "status", "--usage", "--json"],
-    [openclawBin, "status", "--json"],
-    ["openclaw", "status", "--json"]
-  ], timeoutMs);
-  if (!result.ok) return null;
-  return normalizeUsageFromPayload(result.data);
-}
-
-async function collectSkillsSnapshot(): Promise<SkillsSourceResult> {
-  const cliSkills = await getSkillsFromOpenclawCli();
-  if (cliSkills && cliSkills.skills.length) {
-    return cliSkills;
-  }
-
-  const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
-  const cliResult = await runJsonCommand([
-    [openclawBin, "skills", "list", "--json"],
-    ["openclaw", "skills", "list", "--json"],
-    [openclawBin, "skills", "list", "--eligible", "--json"],
-    ["openclaw", "skills", "list", "--eligible", "--json"]
-  ], Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000));
-  const warnings = (!cliResult.ok && cliResult.error) ? [`local openclaw cli unavailable: ${cliResult.error}`] : [];
-  return buildSkillsFallbackSnapshot(warnings);
-}
-
-async function collectUsageSnapshot(skills: AgentSkill[]): Promise<UsageOverview> {
-  const cliUsage = await getUsageFromOpenclawCli();
-  if (cliUsage) {
-    return cliUsage;
-  }
-
-  const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
-  const cliResult = await runJsonCommand([
-    [openclawBin, "status", "--usage", "--json"],
-    ["openclaw", "status", "--usage", "--json"],
-    [openclawBin, "status", "--json"],
-    ["openclaw", "status", "--json"]
-  ], Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000));
-  const warnings = (!cliResult.ok && cliResult.error) ? [`local openclaw cli unavailable: ${cliResult.error}`] : [];
-  return buildUsageFallbackSnapshot(skills, warnings);
-}
-
-async function syncOpenclawSnapshots(scope: "all" | "skills" | "usage") {
+async function syncOpenclawSnapshots(scope: "all" | "skills" | "usage", payload: any) {
   const syncedAt = new Date().toISOString();
   const result: {
     ok: boolean;
@@ -808,7 +695,13 @@ async function syncOpenclawSnapshots(scope: "all" | "skills" | "usage") {
   let degradedAttempt = false;
 
   if (scope === "all" || scope === "skills") {
-    const collectedSkills = await collectSkillsSnapshot();
+    const pushedSkillsPayload = payload?.skillsPayload ?? payload?.skills ?? null;
+    const pushedSkillsError = String(payload?.skillsError || "").trim();
+    const collectedSkills = normalizePushedSkillsSnapshot(pushedSkillsPayload)
+      || buildSkillsFallbackSnapshot(
+        [pushedSkillsError || "OpenClaw sync request did not include a valid skills payload"],
+        pushedSkillsError ? `OpenClaw skills 推送失败；${pushedSkillsError}` : "OpenClaw 未推送有效的 skills 快照"
+      );
     collectedSkills.syncedAt = syncedAt;
     if (!collectedSkills.degraded) {
       await saveOpenclawSkillsCache(collectedSkills);
@@ -828,7 +721,14 @@ async function syncOpenclawSnapshots(scope: "all" | "skills" | "usage") {
 
   if (scope === "all" || scope === "usage") {
     const usageSkills = skillsSnapshot?.skills || (await loadOpenclawSkillsCache())?.skills || getAgentSkillsCatalog();
-    const collectedUsage = await collectUsageSnapshot(usageSkills as AgentSkill[]);
+    const pushedUsagePayload = payload?.usagePayload ?? payload?.usage ?? null;
+    const pushedUsageError = String(payload?.usageError || "").trim();
+    const collectedUsage = normalizeUsageFromPayload(pushedUsagePayload)
+      || buildUsageFallbackSnapshot(
+        usageSkills as AgentSkill[],
+        [pushedUsageError || "OpenClaw sync request did not include a valid usage payload"],
+        pushedUsageError ? `OpenClaw usage 推送失败；${pushedUsageError}` : "OpenClaw 未推送有效的 usage 快照"
+      );
     collectedUsage.syncedAt = syncedAt;
     if (!collectedUsage.degraded) {
       await saveOpenclawUsageCache(collectedUsage);
@@ -1046,7 +946,7 @@ export async function handleRequest(req: Request) {
     if (!auth.ok) return auth.response;
     const scope = String(data.scope || "all").trim().toLowerCase();
     const normalizedScope = scope === "skills" || scope === "usage" ? scope : "all";
-    const result = await syncOpenclawSnapshots(normalizedScope);
+    const result = await syncOpenclawSnapshots(normalizedScope, data);
     if (requireHealthyOpenclawSource() && !result.ok) {
       return jsonResponse({
         ok: false,

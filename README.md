@@ -57,9 +57,8 @@ Behavior:
 - create/patch `.env`
 - initialize `state.json` / `join-keys.json` with production-safe defaults if missing
 - enforce production-required settings
-- call `POST /openclaw/sync` so the server executes local OpenClaw CLI and refreshes panel cache
 - validate `/health`, `/status`, `/openclaw/skills`, `/openclaw/usage`
-- report whether the latest sync is healthy or degraded, and whether cached panels are still fresh
+- report whether panel caches are healthy or degraded, and whether cached panels are fresh
 - optionally fail bootstrap when degraded panel data is not acceptable (`OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`)
 
 ## Environment
@@ -71,7 +70,7 @@ Behavior:
 - `ENABLE_STATE_CONTROL` (`0` by default; legacy `/set_state`)
 - `ENABLE_ASSET_DECORATION` (`0` by default; legacy `/assets/*`)
 - `ENABLE_AGENT_SKILLS_API` (`1` by default; `/agent-skills/*`)
-- `OPENCLAW_BIN` (default `openclaw`, used when the server executes CLI during sync)
+- `OPENCLAW_BIN` (default `openclaw`, used by the OpenClaw push script when it collects local CLI snapshots)
 - `OPENCLAW_CACHE_STALE_SECONDS` (default `120`, panel cache staleness threshold)
 - `OPENCLAW_REQUIRE_HEALTHY_SOURCE` (`0` by default; when `1`, degraded skills/usage are treated as failure)
 - `OFFICE_PANEL_SYNC_INTERVAL_SECONDS` (default `60`, agent-side panel sync interval)
@@ -80,22 +79,23 @@ Behavior:
 ## Agent Skills API
 - `GET /openclaw/skills` (read-only catalog for UI)
 - `GET /openclaw/usage` (read-only usage snapshot for UI)
-- `POST /openclaw/sync` (OpenClaw/agent triggers CLI sync and refreshes cached panel data)
+- `POST /openclaw/sync` (OpenClaw/agent pushes skills + usage snapshots and refreshes cached panel data)
 - `POST /agent-skills/list`
 - `POST /agent-skills/execute`
 
 Default behavior now disables legacy status/decorate entry points in favor of agent skills.
 `/openclaw/skills` and `/openclaw/usage` now read cached snapshots.
-OpenClaw refreshes those snapshots through `POST /openclaw/sync`, and the server executes local CLI commands during that sync.
+OpenClaw refreshes those snapshots through `POST /openclaw/sync` after collecting data from its own local CLI environment.
 
 Production policy options:
 1. degraded-tolerant: keep `OPENCLAW_REQUIRE_HEALTHY_SOURCE=0` and allow fallback mode
 2. strict: set `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1` and fail bootstrap / panel requests when cached panel data is degraded
 
 Sync semantics:
-- `POST /openclaw/sync` is the only endpoint that executes local OpenClaw CLI.
+- `POST /openclaw/sync` is the only endpoint that updates panel caches.
 - `GET /openclaw/skills` and `GET /openclaw/usage` only read cached snapshots for the UI.
-- If a sync attempt is degraded, the server now preserves the previous healthy cache when available and returns a sync failure instead of silently overwriting the panel with fallback data.
+- OpenClaw is responsible for executing local CLI and pushing `skillsPayload` / `usagePayload`.
+- If a sync attempt is degraded, the server preserves the previous healthy cache when available and returns a sync failure instead of silently overwriting the panel with fallback data.
 
 ## Security Notes (VPS)
 - In production mode (`STAR_OFFICE_ENV=production`), startup will fail if `ASSET_DRAWER_PASS` is default or `STAR_OFFICE_API_TOKEN` is missing.

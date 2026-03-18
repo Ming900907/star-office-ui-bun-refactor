@@ -14,6 +14,7 @@
  */
 
 import { promises as fs } from "node:fs";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -23,6 +24,8 @@ const AGENT_NAME = (process.env.AGENT_NAME || "").trim();
 const PUSH_INTERVAL_SECONDS = Number(process.env.OFFICE_PUSH_INTERVAL_SECONDS || 15);
 const PANEL_SYNC_INTERVAL_SECONDS = Number(process.env.OFFICE_PANEL_SYNC_INTERVAL_SECONDS || 60);
 const STALE_STATE_TTL_SECONDS = Number(process.env.OFFICE_STALE_STATE_TTL || 600);
+const OPENCLAW_BIN = (process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
+const OPENCLAW_CLI_TIMEOUT_MS = Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000);
 const LOCAL_STATE_FILE = process.env.OFFICE_LOCAL_STATE_FILE || path.resolve(process.cwd(), "state.json");
 const CACHE_FILE = path.resolve(process.cwd(), "office-agent-state.json");
 
@@ -98,6 +101,92 @@ async function api(pathname, payload) {
   return { ok: res.ok, status: res.status, data, text };
 }
 
+async function runJsonCommand(commands, timeoutMs = OPENCLAW_CLI_TIMEOUT_MS) {
+  const errors = [];
+  for (const [cmd, ...args] of commands) {
+    try {
+      const result = await new Promise((resolve) => {
+        const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+        let stdout = "";
+        let stderr = "";
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGKILL");
+        }, timeoutMs);
+
+        child.stdout.on("data", (chunk) => {
+          stdout += String(chunk);
+        });
+        child.stderr.on("data", (chunk) => {
+          stderr += String(chunk);
+        });
+        child.on("error", (error) => {
+          clearTimeout(timer);
+          resolve({ ok: false, error: `${cmd} failed: ${String(error.message || error)}` });
+        });
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          if (timedOut) {
+            resolve({ ok: false, error: `${cmd} ${args.join(" ")} timed out after ${timeoutMs}ms` });
+            return;
+          }
+          if (code !== 0) {
+            resolve({ ok: false, error: `${cmd} ${args.join(" ")} exited ${code}${stderr.trim() ? `: ${stderr.trim()}` : ""}` });
+            return;
+          }
+          const text = String(stdout || "").trim();
+          if (!text) {
+            resolve({ ok: false, error: `${cmd} ${args.join(" ")} returned empty output` });
+            return;
+          }
+          try {
+            resolve({ ok: true, data: JSON.parse(text) });
+          } catch {
+            resolve({ ok: false, error: `${cmd} ${args.join(" ")} returned non-JSON output` });
+          }
+        });
+      });
+
+      if (result.ok) return result;
+      errors.push(result.error);
+    } catch (error) {
+      errors.push(`${cmd} ${args.join(" ")} failed: ${String(error.message || error)}`);
+    }
+  }
+  return { ok: false, error: errors.join(" | ") };
+}
+
+async function collectPanelSyncPayload(local) {
+  const skills = await runJsonCommand([
+    [OPENCLAW_BIN, "skills", "list", "--json"],
+    ["openclaw", "skills", "list", "--json"],
+    [OPENCLAW_BIN, "skills", "list", "--eligible", "--json"],
+    ["openclaw", "skills", "list", "--eligible", "--json"]
+  ]);
+
+  const usage = await runJsonCommand([
+    [OPENCLAW_BIN, "status", "--usage", "--json"],
+    ["openclaw", "status", "--usage", "--json"],
+    [OPENCLAW_BIN, "status", "--json"],
+    ["openclaw", "status", "--json"]
+  ]);
+
+  const payload = {
+    agentId: local.agentId,
+    joinKey: JOIN_KEY,
+    scope: "all"
+  };
+
+  if (skills.ok) payload.skillsPayload = skills.data;
+  else payload.skillsError = skills.error;
+
+  if (usage.ok) payload.usagePayload = usage.data;
+  else payload.usageError = usage.error;
+
+  return payload;
+}
+
 async function ensureJoined(local) {
   if (local.joined && local.agentId) return local;
   const resp = await api("/join-agent", {
@@ -143,17 +232,16 @@ async function pushLoop(local) {
     }
 
     if (PANEL_SYNC_INTERVAL_SECONDS > 0 && (!lastPanelSyncAt || ((Date.now() - lastPanelSyncAt) / 1000) >= PANEL_SYNC_INTERVAL_SECONDS)) {
-      const syncResp = await api("/openclaw/sync", {
-        agentId: local.agentId,
-        joinKey: JOIN_KEY,
-        scope: "all"
-      });
-      if (!syncResp.ok && syncResp.status !== 503) {
-        console.error(`panel sync failed: status=${syncResp.status}, body=${syncResp.text}`);
-      } else {
-        const mode = syncResp.data?.ok ? "ok" : "degraded";
-        console.log(`Panel sync: ${mode}`);
+      const syncPayload = await collectPanelSyncPayload(local);
+      const syncResp = await api("/openclaw/sync", syncPayload);
+      if (syncResp.status === 200 && syncResp.data?.ok) {
+        console.log("Panel sync: ok");
         lastPanelSyncAt = Date.now();
+      } else if (syncResp.status === 502 || syncResp.status === 503) {
+        console.error(`panel sync degraded: status=${syncResp.status}, body=${syncResp.text}`);
+        lastPanelSyncAt = Date.now();
+      } else {
+        console.error(`panel sync failed: status=${syncResp.status}, body=${syncResp.text}`);
       }
     }
 

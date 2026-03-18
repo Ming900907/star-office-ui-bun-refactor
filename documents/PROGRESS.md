@@ -19,7 +19,7 @@
 - 前端入口调整：将原“装修房间”区域切换为“OpenClaw 技能展示”抽屉（`/openclaw/skills`）
 - 新增“用量追踪”入口：展示模型/渠道/token/成本（`/openclaw/usage`）
 - 交互修正：`用量追踪` 按钮样式与技能按钮统一为像素风全宽按钮
-- 生产链路改造：OpenClaw 通过 `POST /openclaw/sync` 触发服务端 CLI，同步 skills/usage 到本地缓存
+- 生产链路改造：OpenClaw 通过 `POST /openclaw/sync` 推送本地采集的 skills/usage 到本地缓存
 - 新增一键部署引导：`bun run bootstrap:prod`（自动配置 `.env`、初始化生产安全状态文件、执行最小验收）
 - 完成端到端与手动回归（/health、/status、/agents、/join-agent、/agent-approve/reject/leave/push、/yesterday-memo、/assets/*、页面路由）
 - 行为对齐：/set_state 非法 state 忽略且 200；/yesterday-memo 无文件 200+success=false；/leave-agent 在 reject 后 404 与上游一致

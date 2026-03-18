@@ -18,18 +18,17 @@
 该命令会自动完成：
 - `.env` 创建与生产字段校验
 - `state.json` / `join-keys.json` 生产安全初始化
-- 调用 `POST /openclaw/sync`，由服务端执行本机 CLI 并刷新缓存
 - `/health`、`/status`、`/openclaw/skills`、`/openclaw/usage` 验收
 - 若设置 strict 模式，则在 skills/usage 处于 degraded 时直接失败
 
 ## 方案 A：同机（OpenClaw 与 Office 同 VPS）
 1. 启动 Bun 后端（systemd）
 2. 反代 `/` 到 Bun
-3. OpenClaw 通过 `POST /openclaw/sync` 触发服务端执行本机 CLI 并刷新缓存
+3. OpenClaw 在自身环境执行 CLI，并通过 `POST /openclaw/sync` 推送 `skillsPayload` / `usagePayload`
 4. Office 前端通过 `/openclaw/skills` 与 `/openclaw/usage` 读取缓存结果
 
 注意：
-- `POST /openclaw/sync` 才是 CLI 拉取入口；两个 GET 面板接口都不会主动执行 CLI。
+- `POST /openclaw/sync` 才是缓存刷新入口；两个 GET 面板接口都不会主动执行 CLI。
 - 如果本次 sync 退化，服务端会返回失败，并在存在健康缓存时保留上一份有效缓存，避免前端被 fallback 覆盖。
 
 ### systemd 示例
@@ -102,7 +101,7 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=https://office.example.co
 - degraded-tolerant：`OPENCLAW_REQUIRE_HEALTHY_SOURCE=0`
   适合先把服务跑起来，允许暂时使用 fallback 或未同步缓存。
 - strict：`OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`
-  适合正式生产验收，要求缓存必须来自健康的 CLI 同步结果。
+  适合正式生产验收，要求缓存必须来自健康的 OpenClaw 推送结果。
 
 ## 最小验证
 - `GET /health` / `GET /status`
@@ -111,6 +110,6 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=https://office.example.co
 - 页面能看到状态变化
 
 验收解释：
-- `POST /openclaw/sync=200`：本次 CLI 同步健康
-- `POST /openclaw/sync=502`：本次 CLI 同步退化，但 strict 未开启；应继续检查是否保留了旧缓存
+- `POST /openclaw/sync=200`：本次 OpenClaw 推送健康
+- `POST /openclaw/sync=502`：本次 OpenClaw 推送退化，但 strict 未开启；应继续检查是否保留了旧缓存
 - `POST /openclaw/sync=503`：strict 模式下拒绝降级同步

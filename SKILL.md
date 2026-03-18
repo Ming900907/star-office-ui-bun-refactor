@@ -99,8 +99,9 @@ export OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
 2. 自动准备 `state.json`、`join-keys.json`（缺失时以生产安全默认值初始化，不使用 sample）
 3. 若 `STAR_OFFICE_ENV=production`：
    - 强校验 `ASSET_DRAWER_PASS`、`STAR_OFFICE_API_TOKEN`
-   - OpenClaw 通过 `POST /openclaw/sync` 触发服务端执行 `openclaw skills list --json` 与 `openclaw status --usage --json`
-   - `POST /openclaw/sync` 是“拉取与刷新缓存”的唯一入口，`GET /openclaw/skills` 与 `GET /openclaw/usage` 只是读缓存
+   - OpenClaw 在自身运行环境执行 `openclaw skills list --json` 与 `openclaw status --usage --json`
+   - OpenClaw 将采集到的 `skillsPayload` / `usagePayload` 推送到 `POST /openclaw/sync`
+   - `POST /openclaw/sync` 是“推送与刷新缓存”的唯一入口，`GET /openclaw/skills` 与 `GET /openclaw/usage` 只是读缓存
    - 若主人要求“必须真实接入 OpenClaw”，则设置 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`
 4. 自动执行最小验收：
    - `GET /health`
@@ -260,7 +261,7 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=http://127.0.0.1:19000 bu
 - 页面技能面板与用量追踪面板可正常加载
 
 补充判断：
-- `POST /openclaw/sync` 才是“执行 CLI 并刷新缓存”的验收点；不要只调用 `GET /openclaw/skills` / `GET /openclaw/usage` 就判定 OpenClaw 数据源正常
+- `POST /openclaw/sync` 才是“OpenClaw 推送快照并刷新缓存”的验收点；不要只调用 `GET /openclaw/skills` / `GET /openclaw/usage` 就判定 OpenClaw 数据源正常
 - 如果 `POST /openclaw/sync` 返回 `502`，表示本次同步退化；这时要检查服务端是否保留了上一份健康缓存，而不是把前端覆盖成 fallback
 - 如果 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=0`，允许 fallback，但要明确标注“降级”
 - 如果 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`，则 `/openclaw/skills` 或 `/openclaw/usage` 返回 `503` 也算“正确失败”
@@ -288,18 +289,19 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=http://127.0.0.1:19000 bu
 
 生产环境下改为 sync/cache 模式：
 1. OpenClaw 或 agent 调用 `POST /openclaw/sync`
-2. 服务端在同步接口里执行本机 CLI（`openclaw skills list --json`、`openclaw status --usage --json`）
-3. 结果写入本地缓存文件
-4. 前端通过 `GET /openclaw/skills` 与 `GET /openclaw/usage` 读取缓存
+2. OpenClaw 自己执行本地 CLI（`openclaw skills list --json`、`openclaw status --usage --json`）
+3. OpenClaw 把 CLI 结果作为 `skillsPayload` / `usagePayload` 推送给服务端
+4. 服务端写入本地缓存文件
+5. 前端通过 `GET /openclaw/skills` 与 `GET /openclaw/usage` 读取缓存
 
-如果还没有同步过，或 CLI 同步失败，页面会显示 degraded。若设置 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`，降级会被视为失败。
+如果还没有同步过，或 OpenClaw 推送失败，页面会显示 degraded。若设置 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`，降级会被视为失败。
 
 ### Q5：strict mode 什么时候该开？
 
 只有以下情况建议开启：
 - 主人明确要求“必须是真实 OpenClaw 数据”
 - 这是正式验收环境，不能接受 fallback
-- 需要把 sync/CLI 故障直接暴露出来
+- 需要把 sync/推送故障直接暴露出来
 
 如果只是为了先把服务跑起来、先恢复页面可用，不要默认开 strict。
 
