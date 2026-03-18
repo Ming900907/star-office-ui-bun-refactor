@@ -82,6 +82,7 @@ export OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
 ```
 
 5. 验收时不仅看 HTTP 200，还要看：
+   - `POST /openclaw/sync` 的结果是否为真正成功
    - `/openclaw/skills` 与 `/openclaw/usage` 的 `syncedAt`
    - 是否存在 `stale: true`
    - 是否存在 `degraded: true`
@@ -99,6 +100,7 @@ export OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
 3. 若 `STAR_OFFICE_ENV=production`：
    - 强校验 `ASSET_DRAWER_PASS`、`STAR_OFFICE_API_TOKEN`
    - OpenClaw 通过 `POST /openclaw/sync` 触发服务端执行 `openclaw skills list --json` 与 `openclaw status --usage --json`
+   - `POST /openclaw/sync` 是“拉取与刷新缓存”的唯一入口，`GET /openclaw/skills` 与 `GET /openclaw/usage` 只是读缓存
    - 若主人要求“必须真实接入 OpenClaw”，则设置 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`
 4. 自动执行最小验收：
    - `GET /health`
@@ -106,7 +108,7 @@ export OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
    - `POST /openclaw/sync`
    - `GET /openclaw/skills`
    - `GET /openclaw/usage`
-5. 输出一段“已完成配置摘要”（端口、环境、syncedAt/stale/degraded、是否 strict）
+5. 输出一段“已完成配置摘要”（端口、环境、sync 结果、syncedAt/stale/degraded、是否 strict）
 
 原则：
 - 能自动推断就自动推断；只在缺少关键密钥时才询问主人。
@@ -117,6 +119,7 @@ export OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
 
 #### A. 健康
 
+- `POST /openclaw/sync` 返回 `200`
 - skills/usage 都已有 `syncedAt`
 - `stale=false`
 - `degraded=false`
@@ -125,16 +128,18 @@ export OPENCLAW_REQUIRE_HEALTHY_SOURCE=0
 
 #### B. 可运行但降级
 
+- `POST /openclaw/sync` 返回 `502`，或返回 `200` 但后续读缓存仍带 `degraded: true`
 - `source` 含 `fallback`
 - 或 `mode=estimated`
 - 或返回体里有 `degraded: true`
 
 如果主人没有要求 strict，这种状态可以上线，但必须明确告诉主人当前不是“真实 OpenClaw 数据源”。
+如果缓存里之前已经有健康数据，服务端应保留上一份健康缓存，不允许本次降级同步把前端面板覆盖成 fallback。
 
 #### C. 严格模式失败
 
 - 设置了 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`
-- 且 skills/usage 仍是 degraded
+- 且 `POST /openclaw/sync` 返回 `503`，或 skills/usage 仍是 degraded
 
 这时不要说“部署完成”，应该明确告诉主人：
 > 服务已经拉起，但 strict mode 下 OpenClaw 数据源不健康，本次部署验收失败。
@@ -255,6 +260,8 @@ JOIN_KEY=ocj_starteam01 AGENT_NAME=my-agent OFFICE_URL=http://127.0.0.1:19000 bu
 - 页面技能面板与用量追踪面板可正常加载
 
 补充判断：
+- `POST /openclaw/sync` 才是“执行 CLI 并刷新缓存”的验收点；不要只调用 `GET /openclaw/skills` / `GET /openclaw/usage` 就判定 OpenClaw 数据源正常
+- 如果 `POST /openclaw/sync` 返回 `502`，表示本次同步退化；这时要检查服务端是否保留了上一份健康缓存，而不是把前端覆盖成 fallback
 - 如果 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=0`，允许 fallback，但要明确标注“降级”
 - 如果 `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`，则 `/openclaw/skills` 或 `/openclaw/usage` 返回 `503` 也算“正确失败”
 - 不要只看状态码；要同时看 `syncedAt`、`stale`、`degraded`、`warnings`

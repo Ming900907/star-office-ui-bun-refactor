@@ -125,6 +125,16 @@ exit 1
   await fs.chmod(fakeOpenclawBinPath, 0o755);
 }
 
+async function installFailingOpenclawCli() {
+  const script = `#!/usr/bin/env bash
+set -euo pipefail
+echo "simulated failure" >&2
+exit 1
+`;
+  await fs.writeFile(fakeOpenclawBinPath, script, "utf-8");
+  await fs.chmod(fakeOpenclawBinPath, 0o755);
+}
+
 describe("router high-risk flows", () => {
   test("join-agent rejects duplicate names unless reconnecting with the same agentId", async () => {
     const first = await requestJson("/join-agent", {
@@ -266,6 +276,59 @@ describe("router high-risk flows", () => {
     expect(usage.body?.mode).toBe("openclaw-cli-usage");
     expect(usage.body?.degraded).toBe(false);
     expect(usage.body?.summary?.totalTokens).toBe(20);
+  });
+
+  test("degraded sync returns failure and preserves previous healthy cache", async () => {
+    await installFakeOpenclawCli();
+    process.env.OPENCLAW_BIN = fakeOpenclawBinPath;
+    __resetRouterForTests();
+
+    const joined = await requestJson("/join-agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "preserver", joinKey: "ocj_test_1" })
+    });
+
+    const firstSync = await requestJson("/openclaw/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentId: joined.body.agentId,
+        joinKey: "ocj_test_1",
+        scope: "all"
+      })
+    });
+
+    expect(firstSync.status).toBe(200);
+    expect(firstSync.body?.ok).toBe(true);
+
+    await installFailingOpenclawCli();
+    process.env.OPENCLAW_BIN = fakeOpenclawBinPath;
+    __resetRouterForTests();
+
+    const degradedSync = await requestJson("/openclaw/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentId: joined.body.agentId,
+        joinKey: "ocj_test_1",
+        scope: "all"
+      })
+    });
+
+    expect(degradedSync.status).toBe(502);
+    expect(degradedSync.body?.ok).toBe(false);
+    expect(degradedSync.body?.code).toBe("DEGRADED_OPENCLAW_SYNC");
+
+    const skills = await requestJson("/openclaw/skills");
+    expect(skills.status).toBe(200);
+    expect(skills.body?.source).toBe("openclaw-cli");
+    expect(skills.body?.degraded).toBe(false);
+
+    const usage = await requestJson("/openclaw/usage");
+    expect(usage.status).toBe(200);
+    expect(usage.body?.mode).toBe("openclaw-cli-usage");
+    expect(usage.body?.degraded).toBe(false);
   });
 
   test("agent-push updates the joined agent state when joinKey matches", async () => {

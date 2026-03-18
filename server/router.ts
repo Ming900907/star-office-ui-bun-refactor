@@ -684,6 +684,26 @@ function appendCacheHealth<T extends { degraded: boolean; warnings: string[]; no
   };
 }
 
+function mergePreservedSnapshotWarnings<T extends { degraded: boolean; warnings: string[]; note: string }>(
+  cached: T,
+  degradedAttempt: T,
+  label: string
+) {
+  const warnings = [
+    ...(cached.warnings || []),
+    ...(degradedAttempt.warnings || []),
+    `retained previous ${label} cache after degraded sync attempt`
+  ];
+  const note = degradedAttempt.note
+    ? `${degradedAttempt.note}；已保留上一份有效缓存`
+    : `degraded ${label} sync attempt; retained previous cache`;
+  return {
+    ...cached,
+    warnings,
+    note
+  };
+}
+
 async function getSkillsFromOpenclawCli(): Promise<SkillsSourceResult | null> {
   const openclawBin = String(process.env.OPENCLAW_BIN || "openclaw").trim() || "openclaw";
   const timeoutMs = Number(process.env.OPENCLAW_CLI_TIMEOUT_MS || 6000);
@@ -785,23 +805,47 @@ async function syncOpenclawSnapshots(scope: "all" | "skills" | "usage") {
   };
 
   let skillsSnapshot: SkillsSourceResult | null = null;
+  let degradedAttempt = false;
 
   if (scope === "all" || scope === "skills") {
-    skillsSnapshot = await collectSkillsSnapshot();
-    skillsSnapshot.syncedAt = syncedAt;
-    await saveOpenclawSkillsCache(skillsSnapshot);
+    const collectedSkills = await collectSkillsSnapshot();
+    collectedSkills.syncedAt = syncedAt;
+    if (!collectedSkills.degraded) {
+      await saveOpenclawSkillsCache(collectedSkills);
+      skillsSnapshot = collectedSkills;
+    } else {
+      degradedAttempt = true;
+      const cachedSkills = await loadOpenclawSkillsCache();
+      if (cachedSkills && !cachedSkills.degraded) {
+        skillsSnapshot = mergePreservedSnapshotWarnings(cachedSkills, collectedSkills, "skills");
+      } else {
+        await saveOpenclawSkillsCache(collectedSkills);
+        skillsSnapshot = collectedSkills;
+      }
+    }
     result.skills = skillsSnapshot;
   }
 
   if (scope === "all" || scope === "usage") {
     const usageSkills = skillsSnapshot?.skills || (await loadOpenclawSkillsCache())?.skills || getAgentSkillsCatalog();
-    const usageSnapshot = await collectUsageSnapshot(usageSkills as AgentSkill[]);
-    usageSnapshot.syncedAt = syncedAt;
-    await saveOpenclawUsageCache(usageSnapshot);
-    result.usage = usageSnapshot;
+    const collectedUsage = await collectUsageSnapshot(usageSkills as AgentSkill[]);
+    collectedUsage.syncedAt = syncedAt;
+    if (!collectedUsage.degraded) {
+      await saveOpenclawUsageCache(collectedUsage);
+      result.usage = collectedUsage;
+    } else {
+      degradedAttempt = true;
+      const cachedUsage = await loadOpenclawUsageCache();
+      if (cachedUsage && !cachedUsage.degraded) {
+        result.usage = mergePreservedSnapshotWarnings(cachedUsage, collectedUsage, "usage");
+      } else {
+        await saveOpenclawUsageCache(collectedUsage);
+        result.usage = collectedUsage;
+      }
+    }
   }
 
-  if ((result.skills && result.skills.degraded) || (result.usage && result.usage.degraded)) {
+  if (degradedAttempt || (result.skills && result.skills.degraded) || (result.usage && result.usage.degraded)) {
     result.ok = false;
   }
   return result;
@@ -1014,6 +1058,18 @@ export async function handleRequest(req: Request) {
         skills: result.skills,
         usage: result.usage
       }, 503);
+    }
+    if (!result.ok) {
+      return jsonResponse({
+        ok: false,
+        code: "DEGRADED_OPENCLAW_SYNC",
+        msg: "OpenClaw sync completed with degraded data; existing healthy cache was preserved when available",
+        scope: normalizedScope,
+        strict: false,
+        syncedAt: result.syncedAt,
+        skills: result.skills,
+        usage: result.usage
+      }, 502);
     }
     return jsonResponse({
       ok: result.ok,

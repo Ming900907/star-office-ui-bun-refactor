@@ -57,8 +57,9 @@ Behavior:
 - create/patch `.env`
 - initialize `state.json` / `join-keys.json` with production-safe defaults if missing
 - enforce production-required settings
+- call `POST /openclaw/sync` so the server executes local OpenClaw CLI and refreshes panel cache
 - validate `/health`, `/status`, `/openclaw/skills`, `/openclaw/usage`
-- report whether OpenClaw panel cache is healthy or degraded
+- report whether the latest sync is healthy or degraded, and whether cached panels are still fresh
 - optionally fail bootstrap when degraded panel data is not acceptable (`OPENCLAW_REQUIRE_HEALTHY_SOURCE=1`)
 
 ## Environment
@@ -90,6 +91,11 @@ OpenClaw refreshes those snapshots through `POST /openclaw/sync`, and the server
 Production policy options:
 1. degraded-tolerant: keep `OPENCLAW_REQUIRE_HEALTHY_SOURCE=0` and allow fallback mode
 2. strict: set `OPENCLAW_REQUIRE_HEALTHY_SOURCE=1` and fail bootstrap / panel requests when cached panel data is degraded
+
+Sync semantics:
+- `POST /openclaw/sync` is the only endpoint that executes local OpenClaw CLI.
+- `GET /openclaw/skills` and `GET /openclaw/usage` only read cached snapshots for the UI.
+- If a sync attempt is degraded, the server now preserves the previous healthy cache when available and returns a sync failure instead of silently overwriting the panel with fallback data.
 
 ## Security Notes (VPS)
 - In production mode (`STAR_OFFICE_ENV=production`), startup will fail if `ASSET_DRAWER_PASS` is default or `STAR_OFFICE_API_TOKEN` is missing.

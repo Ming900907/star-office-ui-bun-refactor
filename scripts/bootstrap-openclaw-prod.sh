@@ -83,24 +83,7 @@ if [[ -z "$API_TOKEN" || "$API_TOKEN" == "replace_with_long_random_token" ]]; th
   echo "✅ Generated STAR_OFFICE_API_TOKEN"
 fi
 
-BASE_URL="${OPENCLAW_API_BASE_URL:-}"
-SKILLS_URL="${OPENCLAW_SKILLS_SOURCE_URL:-}"
-USAGE_URL="${OPENCLAW_USAGE_SOURCE_URL:-}"
 STRICT_SOURCE_HEALTH="${OPENCLAW_REQUIRE_HEALTHY_SOURCE:-0}"
-
-if [[ -n "$BASE_URL" ]]; then
-  BASE_URL="${BASE_URL%/}"
-  if [[ -z "$SKILLS_URL" ]]; then
-    SKILLS_URL="${BASE_URL}/skills"
-    upsert_env "OPENCLAW_SKILLS_SOURCE_URL" "$SKILLS_URL"
-    echo "✅ Derived OPENCLAW_SKILLS_SOURCE_URL from OPENCLAW_API_BASE_URL"
-  fi
-  if [[ -z "$USAGE_URL" ]]; then
-    USAGE_URL="${BASE_URL}/usage"
-    upsert_env "OPENCLAW_USAGE_SOURCE_URL" "$USAGE_URL"
-    echo "✅ Derived OPENCLAW_USAGE_SOURCE_URL from OPENCLAW_API_BASE_URL"
-  fi
-fi
 
 read_env_file
 STRICT_SOURCE_HEALTH="${OPENCLAW_REQUIRE_HEALTHY_SOURCE:-0}"
@@ -143,6 +126,57 @@ check_endpoint() {
     exit 1
   fi
   echo "✅ ${path}"
+}
+
+post_sync() {
+  local payload response status body ok code
+  payload='{"scope":"all"}'
+  response="$(curl -sS -X POST \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${STAR_OFFICE_API_TOKEN}" \
+    -d "$payload" \
+    -w $'\n%{http_code}' \
+    "${BASE_LOCAL_URL}/openclaw/sync")" || {
+      echo "❌ Validation failed: POST /openclaw/sync"
+      echo "   check log: ${LOG_FILE}"
+      exit 1
+    }
+
+  status="$(printf '%s' "$response" | tail -n1)"
+  body="$(printf '%s' "$response" | sed '$d')"
+  ok="$(json_field "$body" "ok" 2>/dev/null || true)"
+  code="$(json_field "$body" "code" 2>/dev/null || true)"
+
+  if [[ "$status" == "200" && "$ok" == "true" ]]; then
+    echo "✅ POST /openclaw/sync (healthy)"
+    LAST_SYNC_STATUS="$status"
+    LAST_SYNC_OK="$ok"
+    LAST_SYNC_CODE="$code"
+    return
+  fi
+
+  if [[ "$status" == "502" && "$code" == "DEGRADED_OPENCLAW_SYNC" ]]; then
+    echo "⚠️  POST /openclaw/sync (degraded; healthy cache preserved when available)"
+    LAST_SYNC_STATUS="$status"
+    LAST_SYNC_OK="$ok"
+    LAST_SYNC_CODE="$code"
+    return
+  fi
+
+  if [[ "$status" == "503" && "$code" == "DEGRADED_OPENCLAW_SOURCE" ]]; then
+    echo "❌ POST /openclaw/sync (strict mode rejected degraded sync)"
+    LAST_SYNC_STATUS="$status"
+    LAST_SYNC_OK="$ok"
+    LAST_SYNC_CODE="$code"
+    if [[ "$STRICT_SOURCE_HEALTH" == "1" ]]; then
+      exit 1
+    fi
+    return
+  fi
+
+  echo "❌ Validation failed: POST /openclaw/sync returned unexpected status=${status} ok=${ok:-missing} code=${code:-missing}"
+  echo "   check log: ${LOG_FILE}"
+  exit 1
 }
 
 json_field() {
@@ -195,6 +229,7 @@ inspect_openclaw_endpoint() {
 echo "== Running validation checks =="
 check_endpoint "/health"
 check_endpoint "/status"
+post_sync
 inspect_openclaw_endpoint "/openclaw/skills" "source" "source"
 skills_source_label="${LAST_ENDPOINT_VALUE:-unknown}"
 skills_quality="${LAST_ENDPOINT_QUALITY:-degraded}"
@@ -217,6 +252,8 @@ echo "host: ${HOST_VAL}"
 echo "port: ${PORT_VAL}"
 echo "skills source: ${skills_source_label}"
 echo "usage source: ${usage_source_label}"
+echo "sync status: ${LAST_SYNC_STATUS:-unknown}"
+echo "sync code: ${LAST_SYNC_CODE:-none}"
 echo "skills quality: ${skills_quality}"
 echo "usage quality: ${usage_quality}"
 echo "require healthy source: ${STRICT_SOURCE_HEALTH}"
